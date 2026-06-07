@@ -1,0 +1,82 @@
+export type Vec3 = [number, number, number]
+
+export type ScaleMode = 'explore' | 'true'
+
+export type PrecisionLevel = 'ephemeris' | 'analytical' | 'statistical'
+
+export interface PlanetDefinition {
+  id: string
+  name: string
+  subtitle: string
+  astronomyBody: string
+  radiusKm: number
+  displayRadius: number
+  color: string
+  accent: string
+  orbitalPeriodDays: number
+  rotationHours: number
+  axialTiltDeg: number
+  facts: string[]
+  precision: PrecisionLevel
+  hasRings?: boolean
+}
+
+export interface MoonDefinition {
+  id: string
+  name: string
+  parentId: string
+  radiusKm: number
+  orbitalRadiusKm: number
+  orbitalPeriodDays: number
+  phaseDegJ2000: number
+  inclinationDeg: number
+  color: string
+  exactModel?: 'earth-moon' | 'jupiter-io' | 'jupiter-europa' | 'jupiter-ganymede' | 'jupiter-callisto'
+}
+
+export interface OrbitalElements {
+  id: string
+  name: string
+  kind: 'dwarf' | 'asteroid' | 'comet'
+  epochJd: number
+  semiMajorAxisAu: number
+  eccentricity: number
+  inclinationDeg: number
+  ascendingNodeDeg: number
+  argumentPeriapsisDeg: number
+  meanAnomalyDeg: number
+  color: string
+  radius: number
+  physicalRadiusKm?: number
+  scale?: Vec3
+  hasRings?: boolean
+  fact: string
+}
+
+export interface SpacecraftDefinition {
+  id: string
+  name: string
+  launchIso: string
+  speedAuPerYear: number
+  direction: Vec3
+  color: string
+  fact: string
+}
+
+export interface BodySnapshot {
+  id: string
+  positionAu: Vec3
+  scenePosition: Vec3
+  distanceAu: number
+}
+
+export interface LayerSettings {
+  labels: boolean
+  orbits: boolean
+  moons: boolean
+  asteroidBelt: boolean
+  kuiperBelt: boolean
+  oortCloud: boolean
+  comets: boolean
+  spacecraft: boolean
+}
