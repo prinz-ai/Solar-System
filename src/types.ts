@@ -4,6 +4,14 @@ export type ScaleMode = 'explore' | 'true'
 
 export type PrecisionLevel = 'ephemeris' | 'analytical' | 'statistical'
 
+export type SunViewMode =
+  | 'photosphere'
+  | 'visible'
+  | '171'
+  | '193'
+  | '304'
+  | 'magnetogram'
+
 export interface PlanetDefinition {
   id: string
   name: string
@@ -48,6 +56,7 @@ export interface OrbitalElements {
   color: string
   radius: number
   physicalRadiusKm?: number
+  rotationHours?: number
   scale?: Vec3
   hasRings?: boolean
   fact: string

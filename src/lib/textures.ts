@@ -514,6 +514,58 @@ function createSunGlowTexture() {
   return texture
 }
 
+function createSunCoronaTexture() {
+  const size = 512
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const context = canvas.getContext('2d')!
+  const center = size / 2
+
+  context.translate(center, center)
+  for (let index = 0; index < 180; index += 1) {
+    const angle = (index / 180) * Math.PI * 2
+    const wave =
+      Math.sin(index * 12.9898) * 0.5 + Math.sin(index * 4.371) * 0.5
+    const length = size * (0.2 + Math.abs(wave) * 0.25)
+    const inner = size * 0.155
+    const gradient = context.createLinearGradient(
+      Math.cos(angle) * inner,
+      Math.sin(angle) * inner,
+      Math.cos(angle) * (inner + length),
+      Math.sin(angle) * (inner + length),
+    )
+    gradient.addColorStop(0, 'rgba(255,238,174,.24)')
+    gradient.addColorStop(0.22, 'rgba(255,153,54,.12)')
+    gradient.addColorStop(1, 'rgba(255,93,20,0)')
+    context.strokeStyle = gradient
+    context.lineWidth = index % 11 === 0 ? 2.2 : 0.8
+    context.beginPath()
+    context.moveTo(Math.cos(angle) * inner, Math.sin(angle) * inner)
+    context.quadraticCurveTo(
+      Math.cos(angle + wave * 0.035) * (inner + length * 0.5),
+      Math.sin(angle + wave * 0.035) * (inner + length * 0.5),
+      Math.cos(angle + wave * 0.08) * (inner + length),
+      Math.sin(angle + wave * 0.08) * (inner + length),
+    )
+    context.stroke()
+  }
+
+  const halo = context.createRadialGradient(0, 0, size * 0.13, 0, 0, size * 0.48)
+  halo.addColorStop(0, 'rgba(255,244,202,.42)')
+  halo.addColorStop(0.34, 'rgba(255,168,67,.16)')
+  halo.addColorStop(1, 'rgba(255,89,16,0)')
+  context.fillStyle = halo
+  context.fillRect(-center, -center, size, size)
+
+  const texture = new CanvasTexture(canvas)
+  texture.colorSpace = SRGBColorSpace
+  texture.minFilter = LinearFilter
+  texture.magFilter = LinearFilter
+  texture.generateMipmaps = false
+  return texture
+}
+
 export function createPlanetTexture(
   id: string,
   readyCallback?: TextureReadyCallback,
@@ -535,6 +587,14 @@ export function createPlanetTexture(
 
   if (id === 'sun-glow') {
     const texture = createSunGlowTexture()
+    notifyTextureReady(texture)
+    textureCache.set(id, texture)
+    onTextureReady(texture, readyCallback)
+    return texture
+  }
+
+  if (id === 'sun-corona') {
+    const texture = createSunCoronaTexture()
     notifyTextureReady(texture)
     textureCache.set(id, texture)
     onTextureReady(texture, readyCallback)

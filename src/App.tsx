@@ -14,6 +14,8 @@ import {
   CirclePause,
   CirclePlay,
   Crosshair,
+  Database,
+  ExternalLink,
   Focus,
   Eye,
   EyeOff,
@@ -39,17 +41,22 @@ import {
   SPACECRAFT,
   SUN,
 } from './data/bodies'
+import { getObjectDataSource } from './data/dataSources'
+import { getRenderCoverage } from './data/renderAssets'
 import {
   getPlanetSnapshots,
   magnitude,
   orbitalPositionAu,
   spacecraftPositionAu,
 } from './lib/ephemeris'
+import { useHorizonsEphemeris } from './lib/horizonsEphemeris'
+import { useMoonHorizonsEphemeris } from './lib/moonHorizonsEphemeris'
 import {
   advanceSimulationDate,
   type PlaybackDirection,
 } from './lib/simulationClock'
-import type { LayerSettings, ScaleMode } from './types'
+import { closeViewAfterSelection } from './lib/cameraInteraction'
+import type { LayerSettings, ScaleMode, SunViewMode } from './types'
 
 const SPEEDS = [
   { label: 'REAL TIME', value: 1 },
@@ -99,6 +106,15 @@ const OBJECT_CATEGORIES: {
     label: `PROBES · ${SPACECRAFT.length}`,
     icon: <Satellite size={12} />,
   },
+]
+
+const SUN_VIEW_OPTIONS: { id: SunViewMode; label: string }[] = [
+  { id: 'photosphere', label: 'REALISTIC' },
+  { id: 'visible', label: 'VISIBLE' },
+  { id: '171', label: 'UV 171' },
+  { id: '193', label: 'UV 193' },
+  { id: '304', label: 'UV 304' },
+  { id: 'magnetogram', label: 'MAGNETIC' },
 ]
 
 const dateFormatter = new Intl.DateTimeFormat('en-US', {
@@ -220,24 +236,33 @@ function Inspector({
   date,
   scaleMode,
   closeView,
+  sunViewMode,
   onCloseViewChange,
+  onSunViewModeChange,
   onClose,
 }: {
   selectedId: string
   date: Date
   scaleMode: ScaleMode
   closeView: boolean
+  sunViewMode: SunViewMode
   onCloseViewChange: (closeView: boolean) => void
+  onSunViewModeChange: (mode: SunViewMode) => void
   onClose: () => void
 }) {
+  const horizons = useHorizonsEphemeris()
+  const moonHorizons = useMoonHorizonsEphemeris()
   const planet = ALL_MAJOR_BODIES.find((body) => body.id === selectedId)
   const moon = MOONS.find((body) => body.id === selectedId)
   const smallBody = SMALL_BODIES.find((body) => body.id === selectedId)
   const spacecraft = SPACECRAFT.find((body) => body.id === selectedId)
+  const dataSource = getObjectDataSource(selectedId)
+  const renderCoverage = getRenderCoverage(selectedId)
   const planetSnapshots = useMemo(
     () => getPlanetSnapshots(date, scaleMode),
     [date, scaleMode],
   )
+  const [referenceNow] = useState(() => Date.now())
 
   let title = ''
   let subtitle = ''
@@ -283,16 +308,20 @@ function Inspector({
       },
     ]
   } else if (moon) {
+    const horizonsPosition = moonHorizons.positionAu(moon.id, date)
     const parent =
       ALL_MAJOR_BODIES.find((body) => body.id === moon.parentId) ??
       SMALL_BODIES.find((body) => body.id === moon.parentId)
     title = moon.name
     subtitle = `Moon of ${parent?.name ?? moon.parentId}`
-    precision = moon.exactModel ? 'ephemeris' : 'analytical'
+    precision =
+      moon.exactModel || horizonsPosition ? 'ephemeris' : 'analytical'
     accent = moon.color
     facts = [
-      moon.id === 'mk2'
-        ? 'MK 2’s orbit is not fully measured; this display uses a representative 12.4-day model.'
+      moon.id === 'mk2' || moon.id === 'dactyl'
+        ? moon.id === 'mk2'
+          ? 'MK 2’s orbit is not fully measured; this display uses a representative 12.4-day model.'
+          : 'Dactyl’s orbit is poorly constrained; this display uses a representative 1.54-day path around Ida.'
         : `${moon.name} circles ${parent?.name ?? moon.parentId} once every ${Math.abs(
             moon.orbitalPeriodDays,
           ).toFixed(2)} Earth days.`,
@@ -314,7 +343,10 @@ function Inspector({
       },
     ]
   } else if (smallBody) {
-    const currentDistanceAu = magnitude(orbitalPositionAu(smallBody, date))
+    const horizonsPosition = horizons.positionAu(smallBody.id, date)
+    const currentDistanceAu = magnitude(
+      horizonsPosition ?? orbitalPositionAu(smallBody, date),
+    )
     const periodDays =
       365.2568983 * Math.pow(smallBody.semiMajorAxisAu, 1.5)
     title = smallBody.name
@@ -323,8 +355,12 @@ function Inspector({
         ? 'Time-traveling ice and dust'
         : smallBody.kind === 'dwarf'
           ? 'IAU-recognized dwarf planet'
-          : 'Main-belt asteroid'
-    precision = 'analytical'
+          : smallBody.semiMajorAxisAu > 30
+            ? 'Kuiper Belt object'
+            : smallBody.semiMajorAxisAu < 1.7
+              ? 'Near-Earth asteroid'
+              : 'Main-belt asteroid'
+    precision = horizonsPosition ? 'ephemeris' : 'analytical'
     accent = smallBody.color
     facts = [smallBody.fact]
     stats = [
@@ -351,15 +387,20 @@ function Inspector({
       },
     ]
   } else if (spacecraft) {
-    const distanceAu = magnitude(spacecraftPositionAu(spacecraft, date))
+    const horizonsPosition = horizons.positionAu(spacecraft.id, date)
+    const distanceAu = magnitude(
+      horizonsPosition ?? spacecraftPositionAu(spacecraft, date),
+    )
     const launch = new Date(spacecraft.launchIso)
     title = spacecraft.name
     subtitle = 'Interstellar explorer'
-    precision = 'analytical'
+    precision = horizonsPosition ? 'ephemeris' : 'analytical'
     accent = spacecraft.color
     facts = [
       spacecraft.fact,
-      'Its displayed position uses a continuously updated long-range trajectory estimate.',
+      horizonsPosition
+        ? 'Its displayed position is interpolated from NASA/JPL Horizons state vectors.'
+        : 'Its displayed position uses a continuously updated long-range trajectory estimate.',
     ]
     stats = [
       {
@@ -385,7 +426,19 @@ function Inspector({
     ]
   }
 
+  if (renderCoverage) {
+    stats = [
+      ...stats,
+      {
+        label: spacecraft ? 'DETAIL MODEL' : 'SURFACE MODEL',
+        value: renderCoverage,
+      },
+    ]
+  }
+
   if (!title) return null
+  const liveSolarView =
+    Math.abs(date.getTime() - referenceNow) < 12 * 3_600_000
 
   return (
     <aside className="inspector glass-panel" style={{ '--accent': accent } as React.CSSProperties}>
@@ -406,6 +459,29 @@ function Inspector({
         <Focus size={14} />
         {closeView ? 'RETURN TO WIDE VIEW' : 'ZOOM IN CLOSE'}
       </button>
+      {planet?.id === 'sun' && (
+        <div className="solar-view-control">
+          <span>OBSERVATION MODE</span>
+          <div className="solar-view-options">
+            {SUN_VIEW_OPTIONS.map((option) => (
+              <button
+                key={option.id}
+                className={sunViewMode === option.id ? 'active' : ''}
+                onClick={() => onSunViewModeChange(option.id)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          {sunViewMode !== 'photosphere' && (
+            <small>
+              {liveSolarView
+                ? 'NASA SDO image · current Earth-facing hemisphere'
+                : 'Live SDO views are available only within 12 hours of the present. Showing the simulated photosphere.'}
+            </small>
+          )}
+        </div>
+      )}
       <div className="stat-grid">
         {stats.map((stat) => (
           <div className="stat" key={stat.label}>
@@ -414,6 +490,26 @@ function Inspector({
           </div>
         ))}
       </div>
+      {dataSource && (
+        <a
+          className="data-source-card"
+          href={dataSource.url}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={`Open source data for ${title}: ${dataSource.title}`}
+        >
+          <span className="data-source-heading">
+            <Database size={12} />
+            {dataSource.category}
+            <ExternalLink size={11} />
+          </span>
+          <strong>{dataSource.title}</strong>
+          <small>
+            {dataSource.organization}
+            {dataSource.note ? ` · ${dataSource.note}` : ''}
+          </small>
+        </a>
+      )}
       <div className="fact-list">
         {facts.map((fact, index) => (
           <div className="fact" key={fact}>
@@ -500,9 +596,10 @@ const LayerPanel = memo(function LayerPanel({
       <div className="model-note">
         <Gauge size={16} />
         <p>
-          Planets and Pluto use live analytical ephemerides. Cloud decks and
-          decorative belts are representative models, not live weather or
-          individually tracked rocks.
+          Planets use live analytical ephemerides. Small bodies and probes use
+          cached NASA/JPL Horizons state vectors from 2020 through 2040.
+          Twenty-six additional moons use dense Horizons vectors from 2025
+          through 2029. Orbital fallbacks apply outside those ranges.
         </p>
       </div>
     </aside>
@@ -717,9 +814,7 @@ const ObjectNavigator = memo(function ObjectNavigator({
 
   const parent =
     ALL_MAJOR_BODIES.find((body) => body.id === moonParentId) ??
-    SMALL_BODIES.find(
-      (body) => body.id === moonParentId && body.kind === 'dwarf',
-    )
+    SMALL_BODIES.find((body) => body.id === moonParentId)
   const parentMatchesCategory =
     parent &&
     ((category === 'planets' && parent.id !== 'pluto') ||
@@ -727,7 +822,11 @@ const ObjectNavigator = memo(function ObjectNavigator({
         (parent.id === 'pluto' ||
           SMALL_BODIES.some(
             (body) => body.id === parent.id && body.kind === 'dwarf',
-          ))))
+          ))) ||
+      (category === 'asteroids' &&
+        SMALL_BODIES.some(
+          (body) => body.id === parent.id && body.kind === 'asteroid',
+        )))
   const moons = parentMatchesCategory
     ? MOONS.filter((moon) => moon.parentId === moonParentId)
     : []
@@ -816,6 +915,8 @@ function App() {
     useState<ObjectCategory>('planets')
   const [moonParentId, setMoonParentId] = useState<string | null>('earth')
   const [closeView, setCloseView] = useState(false)
+  const [sunViewMode, setSunViewMode] =
+    useState<SunViewMode>('photosphere')
 
   const selectBody = useCallback((id: string) => {
     const planet = ALL_MAJOR_BODIES.find((body) => body.id === id)
@@ -827,12 +928,16 @@ function App() {
       setObjectCategory(planet.id === 'pluto' ? 'dwarfs' : 'planets')
       setMoonParentId(planet.id)
     } else if (moon) {
-      const parentIsDwarf =
-        moon.parentId === 'pluto' ||
-        SMALL_BODIES.some(
-          (body) => body.id === moon.parentId && body.kind === 'dwarf',
-        )
-      setObjectCategory(parentIsDwarf ? 'dwarfs' : 'planets')
+      const smallParent = SMALL_BODIES.find(
+        (body) => body.id === moon.parentId,
+      )
+      setObjectCategory(
+        moon.parentId === 'pluto' || smallParent?.kind === 'dwarf'
+          ? 'dwarfs'
+          : smallParent?.kind === 'asteroid'
+            ? 'asteroids'
+            : 'planets',
+      )
       setMoonParentId(moon.parentId)
       setLayers((current) => ({ ...current, moons: true }))
     } else if (smallBody) {
@@ -846,7 +951,7 @@ function App() {
       if (smallBody.kind === 'comet') {
         setLayers((current) => ({ ...current, comets: true }))
       }
-      if (smallBody.kind === 'dwarf') {
+      if (MOONS.some((candidate) => candidate.parentId === smallBody.id)) {
         setMoonParentId(smallBody.id)
       }
     } else if (spacecraft) {
@@ -855,10 +960,12 @@ function App() {
     }
 
     setSelectedId(id)
-    setCloseView(false)
+    setCloseView((current) =>
+      closeViewAfterSelection(current, selectedId, id),
+    )
     setInspectorOpen(true)
     setLayersOpen(false)
-  }, [])
+  }, [selectedId])
   const closeLayers = useCallback(() => setLayersOpen(false), [])
 
   return (
@@ -870,6 +977,7 @@ function App() {
           layers={layers}
           selectedId={selectedId}
           closeView={closeView}
+          sunViewMode={sunViewMode}
           onSelect={selectBody}
         />
       </div>
@@ -911,7 +1019,9 @@ function App() {
           date={clock.date}
           scaleMode={scaleMode}
           closeView={closeView}
+          sunViewMode={sunViewMode}
           onCloseViewChange={setCloseView}
+          onSunViewModeChange={setSunViewMode}
           onClose={() => setInspectorOpen(false)}
         />
       )}

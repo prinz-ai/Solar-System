@@ -5,6 +5,7 @@ import {
   bodyRotationAngle,
   earthOrientationBasis,
   earthSurfaceDirection,
+  getMoonScenePositions,
   getPlanetSnapshots,
   magnitude,
   mapAuToScene,
@@ -143,6 +144,22 @@ describe('display scale', () => {
       scaleDistance(1, 'true') * 2,
     )
   })
+
+  it('keeps ring-moon close views outside the displayed ring system', () => {
+    const date = new Date('2026-06-07T12:00:00Z')
+    const planets = getPlanetSnapshots(date, 'explore')
+    const moons = getMoonScenePositions(date, 'explore', planets, {
+      enceladus: [238_042 / 149_597_870.7, 0, 0],
+    })
+    const saturn = planets.saturn.scenePosition
+    const offset = magnitude([
+      moons.enceladus[0] - saturn[0],
+      moons.enceladus[1] - saturn[1],
+      moons.enceladus[2] - saturn[2],
+    ])
+
+    expect(offset).toBeGreaterThan(0.82 * 2.26)
+  })
 })
 
 describe('small-body orbital elements', () => {
@@ -180,6 +197,16 @@ describe('small-body orbital elements', () => {
     )
     expect(position.every(Number.isFinite)).toBe(true)
     expect(magnitude(position)).toBeGreaterThan(1)
+  })
+
+  it('keeps every tracked small-body orbit finite at the current epoch', () => {
+    const date = new Date('2026-06-07T00:00:00Z')
+    for (const body of SMALL_BODIES) {
+      expect(
+        orbitalPositionAu(body, date).every(Number.isFinite),
+        body.name,
+      ).toBe(true)
+    }
   })
 })
 

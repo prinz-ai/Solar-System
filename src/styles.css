@@ -165,6 +165,8 @@ button {
   top: 98px;
   left: 24px;
   width: 286px;
+  max-height: calc(100vh - 220px);
+  overflow-y: auto;
   padding: 21px 20px 18px;
   border-top: 2px solid color-mix(in srgb, var(--accent), transparent 20%);
   clip-path: polygon(0 0, calc(100% - 19px) 0, 100% 19px, 100% 100%, 0 100%);
@@ -260,6 +262,58 @@ button {
   box-shadow: 0 0 20px rgba(83, 205, 239, 0.18);
 }
 
+.solar-view-control {
+  margin-top: 10px;
+  padding: 9px;
+  border: 1px solid rgba(255, 181, 76, 0.18);
+  border-radius: 4px;
+  background: rgba(92, 40, 8, 0.12);
+}
+
+.solar-view-control > span {
+  display: block;
+  margin-bottom: 7px;
+  color: #ffba68;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.solar-view-options {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3px;
+}
+
+.solar-view-options button {
+  padding: 5px 3px;
+  color: #9b826e;
+  border: 1px solid rgba(255, 193, 111, 0.11);
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.18);
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.solar-view-options button:hover,
+.solar-view-options button.active {
+  color: #231004;
+  border-color: #ffd083;
+  background: linear-gradient(135deg, #fff0ae, #ff9f42);
+}
+
+.solar-view-control small {
+  display: block;
+  margin-top: 7px;
+  color: #987f70;
+  font-size: 8px;
+  line-height: 1.35;
+}
+
 .stat-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -293,6 +347,84 @@ button {
   font-size: 14px;
   font-weight: 500;
   line-height: 1.05;
+  overflow-wrap: anywhere;
+}
+
+.data-source-card {
+  display: block;
+  margin: 0 0 13px;
+  padding: 10px 11px;
+  color: inherit;
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
+  border-radius: 4px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 58%),
+    rgba(5, 10, 21, 0.72);
+  text-decoration: none;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease;
+}
+
+.data-source-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 58%, transparent);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, transparent), transparent 65%),
+    rgba(7, 14, 28, 0.88);
+  transform: translateY(-1px);
+}
+
+.data-source-heading {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 6px;
+  color: var(--accent);
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.data-source-heading svg:last-child {
+  margin-left: auto;
+}
+
+.data-source-card strong {
+  display: block;
+  color: #eaf3ff;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.15;
+}
+
+.data-source-card small {
+  display: block;
+  margin-top: 4px;
+  color: #7f8da1;
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.sdo-solar-disk {
+  position: relative;
+  width: 430px;
+  height: 430px;
+  overflow: hidden;
+  border-radius: 50%;
+  background: #000;
+  box-shadow:
+    0 0 24px rgba(255, 178, 66, 0.78),
+    0 0 70px rgba(255, 88, 18, 0.42);
+}
+
+.sdo-solar-disk img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  user-select: none;
 }
 
 .fact-list {

@@ -11,6 +11,10 @@ Additional mapped bodies:
   https://svs.gsfc.nasa.gov/4720/
 - Mercury: USGS Astrogeology MESSENGER MDIS global mosaic.
   https://astrogeology.usgs.gov/search/map/mercury_messenger_mdis_global_mosaic_250m
+- Enceladus, Ceres, and Vesta: mission mosaics embedded in NASA's published
+  3D resources, remapped onto the higher-resolution USGS terrain meshes.
+  Longitude-edge cross-fades remove projection seams without altering the
+  mapped interior.
 - Venus: NASA/JPL Magellan radar mosaic beneath a generated opaque cloud layer.
   https://space.jpl.nasa.gov/tmaps/venus.html
 - Mars: USGS Astrogeology Viking global color mosaic.
@@ -39,3 +43,15 @@ Atmospheric rendering:
 - Earth, Mars, Jupiter, Saturn, Uranus, and Neptune use deterministic
   representative cloud layers. They respond to the simulation time and
   sunlight, but they are not live weather observations.
+
+Solar rendering:
+
+- The default Sun is a deterministic shader model with granulation,
+  supergranulation, limb darkening, faculae, sunspots, differential rotation,
+  and a structured corona.
+- Optional current visible-light, 171 Å, 193 Å, 304 Å, and magnetogram views
+  use the latest Earth-facing disk from NASA's Solar Dynamics Observatory.
+  These modes are deliberately disabled when the simulation clock is more
+  than 12 hours from the real present because the feed is not a historical or
+  future full-sphere model.
+  https://sdo.gsfc.nasa.gov/data/

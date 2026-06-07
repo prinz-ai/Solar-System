@@ -129,8 +129,14 @@ function scaleMoonOffset(
   const parentDisplayRadius =
     majorParent?.displayRadius ?? smallParent?.radius ?? 0.14
   const ratio = moon.orbitalRadiusKm / parentRadiusKm
-  const visualDistance =
+  let visualDistance =
     parentDisplayRadius + 0.24 + Math.log1p(ratio) * 0.34
+  const ringClearance = {
+    saturn: parentDisplayRadius * 2.26 + 0.2,
+    uranus: parentDisplayRadius * 4.16 + 0.2,
+    neptune: parentDisplayRadius * 2.55 + 0.2,
+  }[moon.parentId]
+  if (ringClearance) visualDistance = Math.max(visualDistance, ringClearance)
   const realDistance = magnitude(vectorAu)
   const factor = realDistance > 0 ? visualDistance / realDistance : 0
   return vectorAu.map((value) => value * factor) as Vec3
@@ -166,30 +172,33 @@ export function getMoonScenePositions(
   date: Date,
   mode: ScaleMode,
   planets: Record<string, BodySnapshot>,
+  precisionVectors: Record<string, Vec3> = {},
 ): Record<string, Vec3> {
   const exactJupiter = JupiterMoons(date)
   const positions: Record<string, Vec3> = {}
 
   for (const moon of MOONS) {
-    let vectorAu: Vec3
-    switch (moon.exactModel) {
-      case 'earth-moon':
-        vectorAu = vectorToVec3(GeoMoon(date))
-        break
-      case 'jupiter-io':
-        vectorAu = stateToVec3(exactJupiter.io)
-        break
-      case 'jupiter-europa':
-        vectorAu = stateToVec3(exactJupiter.europa)
-        break
-      case 'jupiter-ganymede':
-        vectorAu = stateToVec3(exactJupiter.ganymede)
-        break
-      case 'jupiter-callisto':
-        vectorAu = stateToVec3(exactJupiter.callisto)
-        break
-      default:
-        vectorAu = approximateMoonVector(moon, date)
+    let vectorAu = precisionVectors[moon.id]
+    if (!vectorAu) {
+      switch (moon.exactModel) {
+        case 'earth-moon':
+          vectorAu = vectorToVec3(GeoMoon(date))
+          break
+        case 'jupiter-io':
+          vectorAu = stateToVec3(exactJupiter.io)
+          break
+        case 'jupiter-europa':
+          vectorAu = stateToVec3(exactJupiter.europa)
+          break
+        case 'jupiter-ganymede':
+          vectorAu = stateToVec3(exactJupiter.ganymede)
+          break
+        case 'jupiter-callisto':
+          vectorAu = stateToVec3(exactJupiter.callisto)
+          break
+        default:
+          vectorAu = approximateMoonVector(moon, date)
+      }
     }
 
     const offset = scaleMoonOffset(vectorAu, moon, mode)
