@@ -10,6 +10,35 @@ import {
 
 const textureCache = new Map<string, Texture>()
 
+type TextureReadyCallback = () => void
+
+function notifyTextureReady(texture: Texture) {
+  texture.userData.ready = true
+  const callbacks = texture.userData.readyCallbacks as
+    | Set<TextureReadyCallback>
+    | undefined
+  callbacks?.forEach((callback) => callback())
+  callbacks?.clear()
+}
+
+function onTextureReady(
+  texture: Texture,
+  callback: TextureReadyCallback | undefined,
+) {
+  if (!callback) return
+  if (texture.userData.ready) {
+    queueMicrotask(callback)
+    return
+  }
+
+  const callbacks =
+    (texture.userData.readyCallbacks as
+      | Set<TextureReadyCallback>
+      | undefined) ?? new Set<TextureReadyCallback>()
+  callbacks.add(callback)
+  texture.userData.readyCallbacks = callbacks
+}
+
 export interface CloudLayerDefinition {
   color: string
   opacity: number
@@ -117,7 +146,7 @@ const IMAGE_TEXTURES: Record<
     longitudeDirection: 'west',
   },
   titan: {
-    url: '/textures/titan-cassini.jpg',
+    url: '/textures/titan-cassini-radar.jpg',
     longitudeDirection: 'west',
   },
 }
@@ -451,30 +480,80 @@ function createCloudTexture(id: string) {
   texture.wrapS = RepeatWrapping
   texture.minFilter = LinearFilter
   texture.magFilter = LinearFilter
-  texture.anisotropy = 8
+  texture.generateMipmaps = false
+  texture.anisotropy = 4
   return texture
 }
 
-export function createPlanetTexture(id: string) {
+function createSunGlowTexture() {
+  const size = 256
+  const canvas = document.createElement('canvas')
+  canvas.width = size
+  canvas.height = size
+  const context = canvas.getContext('2d')!
+  const gradient = context.createRadialGradient(
+    size / 2,
+    size / 2,
+    0,
+    size / 2,
+    size / 2,
+    size / 2,
+  )
+  gradient.addColorStop(0, 'rgba(255,244,190,1)')
+  gradient.addColorStop(0.18, 'rgba(255,174,48,.8)')
+  gradient.addColorStop(0.48, 'rgba(255,92,10,.3)')
+  gradient.addColorStop(1, 'rgba(255,70,0,0)')
+  context.fillStyle = gradient
+  context.fillRect(0, 0, size, size)
+
+  const texture = new CanvasTexture(canvas)
+  texture.colorSpace = SRGBColorSpace
+  texture.minFilter = LinearFilter
+  texture.magFilter = LinearFilter
+  texture.generateMipmaps = false
+  return texture
+}
+
+export function createPlanetTexture(
+  id: string,
+  readyCallback?: TextureReadyCallback,
+) {
   const cached = textureCache.get(id)
-  if (cached) return cached
+  if (cached) {
+    onTextureReady(cached, readyCallback)
+    return cached
+  }
 
   if (id.endsWith('-clouds')) {
     const bodyId = id.slice(0, -'-clouds'.length)
     const texture = createCloudTexture(bodyId)
+    notifyTextureReady(texture)
     textureCache.set(id, texture)
+    onTextureReady(texture, readyCallback)
+    return texture
+  }
+
+  if (id === 'sun-glow') {
+    const texture = createSunGlowTexture()
+    notifyTextureReady(texture)
+    textureCache.set(id, texture)
+    onTextureReady(texture, readyCallback)
     return texture
   }
 
   const imageTexture = IMAGE_TEXTURES[id]
   if (imageTexture) {
-    const texture = new TextureLoader().load(imageTexture.url)
+    const texture = new TextureLoader().load(imageTexture.url, () => {
+      notifyTextureReady(texture)
+    })
     texture.colorSpace = SRGBColorSpace
     texture.wrapS = RepeatWrapping
     texture.minFilter = LinearFilter
     texture.magFilter = LinearFilter
-    texture.anisotropy = 16
+    texture.generateMipmaps = false
+    texture.anisotropy = 8
     textureCache.set(id, texture)
+    onTextureReady(texture, readyCallback)
     return texture
   }
 
@@ -505,7 +584,24 @@ export function createPlanetTexture(id: string) {
   texture.wrapS = RepeatWrapping
   texture.minFilter = LinearFilter
   texture.magFilter = LinearFilter
-  texture.anisotropy = 8
+  texture.generateMipmaps = false
+  texture.anisotropy = 4
+  notifyTextureReady(texture)
   textureCache.set(id, texture)
+  onTextureReady(texture, readyCallback)
   return texture
+}
+
+export function releasePlanetTexture(id: string, texture: Texture) {
+  if (textureCache.get(id) !== texture) return
+  textureCache.delete(id)
+  const callbacks = texture.userData.readyCallbacks as
+    | Set<TextureReadyCallback>
+    | undefined
+  callbacks?.clear()
+  texture.dispose()
+}
+
+export function getLoadedTextureIds() {
+  return [...textureCache.keys()].sort()
 }

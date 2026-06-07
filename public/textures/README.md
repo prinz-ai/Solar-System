@@ -15,7 +15,9 @@ Additional mapped bodies:
   https://space.jpl.nasa.gov/tmaps/venus.html
 - Mars: USGS Astrogeology Viking global color mosaic.
   https://astrogeology.usgs.gov/search/map/mars_viking_global_color_mosaic_925m
-- Phobos: USGS Astrogeology Mars Express SRC global mosaic.
+- Phobos: NASA/JPL-Caltech textured 3D shape model, with the USGS
+  Astrogeology Mars Express SRC global mosaic retained as the fallback map.
+  https://science.nasa.gov/resource/phobos-mars-moon-3d-model/
   https://astrogeology.usgs.gov/search/map/phobos_mars_express_src_global_mosaic_12m
 - Deimos, Jupiter, Io, Europa, and Callisto: NASA/JPL texture maps derived
   from Voyager and Galileo imagery. The displayed Jupiter texture
@@ -24,9 +26,12 @@ Additional mapped bodies:
   https://space.jpl.nasa.gov/tmaps/
 - Ganymede: USGS Astrogeology Voyager-Galileo global color mosaic.
   https://astrogeology.usgs.gov/search/map/ganymede_voyager_galileo_ssi_color_global_mosaic_1_4km
-- Titan: NASA/JPL-Caltech/University of Arizona Cassini ISS global
-  near-infrared mosaic.
+- Titan: a visualization composite of the NASA/JPL-Caltech/University of
+  Arizona Cassini ISS global near-infrared mosaic and the JPL/USGS Cassini
+  SAR/HiSAR global coverage mosaic. The radar swaths are rendered over the
+  near-infrared base beneath a separate orange atmospheric shell.
   https://science.nasa.gov/resource/titan-mosaic-the-surface-under-the-haze/
+  https://astrogeology.usgs.gov/search/map/titan_cassini_sar_hisar_global_mosaic_351m
 
 Atmospheric rendering:
 

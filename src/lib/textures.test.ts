@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { getCloudLayerDefinition } from './textures'
+import {
+  getCloudLayerDefinition,
+  hasBodyTexture,
+  usesWestLongitudeTexture,
+} from './textures'
 
 describe('planetary cloud layers', () => {
   it('adds representative clouds to atmospheric planets', () => {
@@ -26,6 +30,28 @@ describe('planetary cloud layers', () => {
       'eris',
     ]) {
       expect(getCloudLayerDefinition(id)).toBeUndefined()
+    }
+  })
+})
+
+describe('mapped moons', () => {
+  it('includes the requested global moon mosaics', () => {
+    for (const id of [
+      'io',
+      'europa',
+      'ganymede',
+      'callisto',
+      'phobos',
+      'titan',
+    ]) {
+      expect(hasBodyTexture(id)).toBe(true)
+    }
+  })
+
+  it('preserves the source maps longitude handedness', () => {
+    expect(usesWestLongitudeTexture('phobos')).toBe(false)
+    for (const id of ['io', 'europa', 'ganymede', 'callisto', 'titan']) {
+      expect(usesWestLongitudeTexture(id)).toBe(true)
     }
   })
 })

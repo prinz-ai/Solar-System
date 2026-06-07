@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import {
   Atom,
   CalendarClock,
@@ -94,16 +101,18 @@ const OBJECT_CATEGORIES: {
   },
 ]
 
+const dateFormatter = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: true,
+})
+
 function formatDate(date: Date) {
-  return new Intl.DateTimeFormat('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: true,
-  }).format(date)
+  return dateFormatter.format(date)
 }
 
 function dateTimeInputValue(date: Date) {
@@ -134,53 +143,53 @@ function useSimulationClock() {
           advanceSimulationDate(current, elapsedMs, speed, direction),
         )
       }
-    }, 100)
+    }, 200)
     return () => window.clearInterval(timer)
   }, [direction, isLive, playing, speed])
 
-  const goLive = () => {
+  const goLive = useCallback(() => {
     setDate(new Date())
     setSpeed(1)
     setDirection(1)
     setIsLive(true)
     setPlaying(false)
     lastTick.current = performance.now()
-  }
+  }, [])
 
-  const chooseDate = (next: Date) => {
+  const chooseDate = useCallback((next: Date) => {
     setDate(next)
     setIsLive(false)
     lastTick.current = performance.now()
-  }
+  }, [])
 
-  const chooseSpeed = (next: number) => {
+  const chooseSpeed = useCallback((next: number) => {
     setSpeed(next)
     if (next !== 1) setIsLive(false)
     lastTick.current = performance.now()
-  }
+  }, [])
 
-  const startPlayback = (nextDirection: PlaybackDirection) => {
+  const startPlayback = useCallback((nextDirection: PlaybackDirection) => {
     setDirection(nextDirection)
     setPlaying(true)
     if (nextDirection === -1 || speed !== 1) setIsLive(false)
     lastTick.current = performance.now()
-  }
+  }, [speed])
 
-  const togglePlaying = () => {
+  const togglePlaying = useCallback(() => {
     if (playing) {
       setPlaying(false)
       setIsLive(false)
     } else {
       startPlayback(direction)
     }
-  }
+  }, [direction, playing, startPlayback])
 
-  const stop = () => {
+  const stop = useCallback(() => {
     setPlaying(false)
     setDirection(1)
     setIsLive(false)
     lastTick.current = performance.now()
-  }
+  }, [])
 
   return {
     date,
@@ -417,7 +426,7 @@ function Inspector({
   )
 }
 
-function LayerPanel({
+const LayerPanel = memo(function LayerPanel({
   layers,
   onChange,
   scaleMode,
@@ -498,7 +507,7 @@ function LayerPanel({
       </div>
     </aside>
   )
-}
+})
 
 function TimeControls({
   date,
@@ -644,7 +653,7 @@ interface DockObject {
   visual: 'body' | 'dwarf' | 'comet' | 'asteroid' | 'probe'
 }
 
-function ObjectNavigator({
+const ObjectNavigator = memo(function ObjectNavigator({
   category,
   selectedId,
   moonParentId,
@@ -794,7 +803,7 @@ function ObjectNavigator({
       </div>
     </nav>
   )
-}
+})
 
 function App() {
   const clock = useSimulationClock()
@@ -808,7 +817,7 @@ function App() {
   const [moonParentId, setMoonParentId] = useState<string | null>('earth')
   const [closeView, setCloseView] = useState(false)
 
-  const selectBody = (id: string) => {
+  const selectBody = useCallback((id: string) => {
     const planet = ALL_MAJOR_BODIES.find((body) => body.id === id)
     const moon = MOONS.find((body) => body.id === id)
     const smallBody = SMALL_BODIES.find((body) => body.id === id)
@@ -849,7 +858,8 @@ function App() {
     setCloseView(false)
     setInspectorOpen(true)
     setLayersOpen(false)
-  }
+  }, [])
+  const closeLayers = useCallback(() => setLayersOpen(false), [])
 
   return (
     <main className="app-shell">
@@ -912,7 +922,7 @@ function App() {
         scaleMode={scaleMode}
         onScaleChange={setScaleMode}
         open={layersOpen}
-        onClose={() => setLayersOpen(false)}
+        onClose={closeLayers}
       />
 
       <ObjectNavigator

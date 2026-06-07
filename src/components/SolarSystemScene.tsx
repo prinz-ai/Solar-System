@@ -1,5 +1,12 @@
-import { useEffect, useMemo, useRef } from 'react'
-import { Canvas } from '@react-three/fiber'
+import {
+  Suspense,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
+import { Canvas, useThree } from '@react-three/fiber'
 import {
   CameraControls,
   Html,
@@ -7,14 +14,19 @@ import {
   Points,
   PointMaterial,
   Sparkles,
+  useGLTF,
 } from '@react-three/drei'
-import { Bloom, EffectComposer, Vignette } from '@react-three/postprocessing'
 import {
+  AdditiveBlending,
+  BackSide,
+  Box3,
   BufferAttribute,
   BufferGeometry,
   Color,
   Matrix4,
+  OctahedronGeometry,
   SphereGeometry,
+  Texture,
   Vector3,
 } from 'three'
 import { MOONS, PLANETS, SMALL_BODIES, SPACECRAFT, SUN } from '../data/bodies'
@@ -34,7 +46,9 @@ import {
 import {
   createPlanetTexture,
   getCloudLayerDefinition,
+  getLoadedTextureIds,
   hasBodyTexture,
+  releasePlanetTexture,
   usesWestLongitudeTexture,
 } from '../lib/textures'
 import type {
@@ -53,6 +67,74 @@ interface SolarSystemSceneProps {
   selectedId: string
   closeView: boolean
   onSelect: (id: string) => void
+}
+
+const HIGH_DETAIL_SPHERE_GEOMETRY = new SphereGeometry(1, 64, 48)
+const LOW_DETAIL_SPHERE_GEOMETRY = new SphereGeometry(1, 32, 24)
+const WEST_HIGH_DETAIL_SPHERE_GEOMETRY =
+  HIGH_DETAIL_SPHERE_GEOMETRY.clone()
+const WEST_LOW_DETAIL_SPHERE_GEOMETRY = LOW_DETAIL_SPHERE_GEOMETRY.clone()
+const SMALL_BODY_GEOMETRY = new SphereGeometry(1, 18, 12)
+const SPACECRAFT_GEOMETRY = new OctahedronGeometry(0.1, 0)
+
+for (const geometry of [
+  WEST_HIGH_DETAIL_SPHERE_GEOMETRY,
+  WEST_LOW_DETAIL_SPHERE_GEOMETRY,
+]) {
+  const uv = geometry.getAttribute('uv')
+  for (let index = 0; index < uv.count; index += 1) {
+    uv.setX(index, 1 - uv.getX(index))
+  }
+  uv.needsUpdate = true
+}
+
+interface PerformanceWithMemory extends Performance {
+  memory?: {
+    usedJSHeapSize: number
+    totalJSHeapSize: number
+    jsHeapSizeLimit: number
+  }
+}
+
+function RuntimeDiagnostics() {
+  const { gl, scene } = useThree()
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return
+
+    const output = document.createElement('output')
+    output.dataset.testid = 'runtime-metrics'
+    output.hidden = true
+    document.body.appendChild(output)
+
+    const update = () => {
+      const memory = (performance as PerformanceWithMemory).memory
+      output.value = JSON.stringify({
+        usedHeapMB: memory
+          ? Math.round((memory.usedJSHeapSize / 1_048_576) * 10) / 10
+          : null,
+        totalHeapMB: memory
+          ? Math.round((memory.totalJSHeapSize / 1_048_576) * 10) / 10
+          : null,
+        geometries: gl.info.memory.geometries,
+        textures: gl.info.memory.textures,
+        programs: gl.info.programs?.length ?? 0,
+        calls: gl.info.render.calls,
+        triangles: gl.info.render.triangles,
+        sceneObjects: scene.children.length,
+        loadedTextureIds: getLoadedTextureIds(),
+      })
+    }
+
+    update()
+    const timer = window.setInterval(update, 1_000)
+    return () => {
+      window.clearInterval(timer)
+      output.remove()
+    }
+  }, [gl, scene])
+
+  return null
 }
 
 function BodyLabel({
@@ -122,21 +204,37 @@ function RingSystem({
   )
 }
 
-function useBodyGeometry(id: string, radius: number) {
-  const geometry = useMemo(() => {
-    const sphere = new SphereGeometry(radius, 64, 48)
-    if (usesWestLongitudeTexture(id)) {
-      const uv = sphere.getAttribute('uv')
-      for (let index = 0; index < uv.count; index += 1) {
-        uv.setX(index, 1 - uv.getX(index))
-      }
-      uv.needsUpdate = true
-    }
-    return sphere
-  }, [id, radius])
+function bodyGeometry(id: string, detailed: boolean) {
+  if (usesWestLongitudeTexture(id)) {
+    return detailed
+      ? WEST_HIGH_DETAIL_SPHERE_GEOMETRY
+      : WEST_LOW_DETAIL_SPHERE_GEOMETRY
+  }
+  return detailed
+    ? HIGH_DETAIL_SPHERE_GEOMETRY
+    : LOW_DETAIL_SPHERE_GEOMETRY
+}
 
-  useEffect(() => () => geometry.dispose(), [geometry])
-  return geometry
+function useTransientTexture(id: string, enabled: boolean) {
+  const [texture, setTexture] = useState<Texture>()
+  const invalidate = useThree((state) => state.invalidate)
+
+  useEffect(() => {
+    if (!enabled) {
+      // The texture must be detached before its cleanup can dispose GPU data.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setTexture(undefined)
+      return
+    }
+
+    const nextTexture = createPlanetTexture(id, invalidate)
+    setTexture(nextTexture)
+    return () => {
+      releasePlanetTexture(id, nextTexture)
+    }
+  }, [enabled, id, invalidate])
+
+  return enabled ? texture : undefined
 }
 
 function orientationMatrix(basis: [Vec3, Vec3, Vec3]) {
@@ -174,18 +272,26 @@ function PlanetMesh({
   showLabel: boolean
   onSelect: () => void
 }) {
+  const invalidate = useThree((state) => state.invalidate)
   const texture = useMemo(
-    () => createPlanetTexture(definition.id),
-    [definition.id],
+    () => createPlanetTexture(definition.id, invalidate),
+    [definition.id, invalidate],
   )
   const cloudLayer = getCloudLayerDefinition(definition.id)
-  const cloudTexture = useMemo(
+  const persistentCloud =
+    definition.id === 'venus' || definition.id === 'earth'
+  const persistentCloudTexture = useMemo(
     () =>
-      cloudLayer
-        ? createPlanetTexture(`${definition.id}-clouds`)
+      cloudLayer && persistentCloud
+        ? createPlanetTexture(`${definition.id}-clouds`, invalidate)
         : undefined,
-    [cloudLayer, definition.id],
+    [cloudLayer, definition.id, invalidate, persistentCloud],
   )
+  const transientCloudTexture = useTransientTexture(
+    `${definition.id}-clouds`,
+    Boolean(cloudLayer && !persistentCloud && selected),
+  )
+  const cloudTexture = persistentCloudTexture ?? transientCloudTexture
   const cloudRotation = useMemo(
     () =>
       cloudLayer
@@ -197,7 +303,7 @@ function PlanetMesh({
         : 0,
     [cloudLayer, date, definition.rotationHours],
   )
-  const geometry = useBodyGeometry(definition.id, definition.displayRadius)
+  const geometry = bodyGeometry(definition.id, selected)
   const matrix = useMemo(
     () => orientationMatrix(bodyOrientationBasis(definition.id, date)),
     [date, definition.id],
@@ -208,6 +314,7 @@ function PlanetMesh({
     <group position={position}>
       <group matrix={matrix} matrixAutoUpdate={false}>
         <mesh
+          scale={definition.displayRadius}
           onClick={(event) => {
             event.stopPropagation()
             onSelect()
@@ -224,8 +331,15 @@ function PlanetMesh({
           />
         </mesh>
         {definition.id === 'earth' && (
-          <mesh scale={1.015}>
-            <sphereGeometry args={[definition.displayRadius, 40, 28]} />
+          <mesh scale={definition.displayRadius * 1.015}>
+            <primitive
+              object={
+                selected
+                  ? HIGH_DETAIL_SPHERE_GEOMETRY
+                  : LOW_DETAIL_SPHERE_GEOMETRY
+              }
+              attach="geometry"
+            />
             <meshPhongMaterial
               color="#b9e8ff"
               transparent
@@ -234,13 +348,20 @@ function PlanetMesh({
             />
           </mesh>
         )}
-        {cloudLayer && (
+        {cloudLayer && cloudTexture && (
           <mesh
-            scale={cloudLayer.scale}
+            scale={definition.displayRadius * cloudLayer.scale}
             rotation={[0, cloudRotation, 0]}
             renderOrder={2}
           >
-            <sphereGeometry args={[definition.displayRadius, 64, 48]} />
+            <primitive
+              object={
+                selected
+                  ? HIGH_DETAIL_SPHERE_GEOMETRY
+                  : LOW_DETAIL_SPHERE_GEOMETRY
+              }
+              attach="geometry"
+            />
             <meshStandardMaterial
               map={cloudTexture}
               color={cloudLayer.color}
@@ -282,7 +403,15 @@ function SunMesh({
   showLabel: boolean
   onSelect: () => void
 }) {
-  const texture = useMemo(() => createPlanetTexture('sun'), [])
+  const invalidate = useThree((state) => state.invalidate)
+  const texture = useMemo(
+    () => createPlanetTexture('sun', invalidate),
+    [invalidate],
+  )
+  const glowTexture = useMemo(
+    () => createPlanetTexture('sun-glow', invalidate),
+    [invalidate],
+  )
   const matrix = useMemo(
     () => orientationMatrix(bodyOrientationBasis('sun', date)),
     [date],
@@ -293,12 +422,13 @@ function SunMesh({
       <mesh
         matrix={matrix}
         matrixAutoUpdate={false}
+        scale={SUN.displayRadius}
         onClick={(event) => {
           event.stopPropagation()
           onSelect()
         }}
       >
-        <sphereGeometry args={[SUN.displayRadius, 64, 48]} />
+        <primitive object={HIGH_DETAIL_SPHERE_GEOMETRY} attach="geometry" />
         <meshStandardMaterial
           map={texture}
           color="#ff8d16"
@@ -313,6 +443,26 @@ function SunMesh({
         distance={0}
         decay={0}
       />
+      <sprite scale={[10, 10, 1]} renderOrder={-1}>
+        <spriteMaterial
+          map={glowTexture}
+          color="#ff8d16"
+          transparent
+          opacity={0.7}
+          blending={AdditiveBlending}
+          depthWrite={false}
+        />
+      </sprite>
+      <sprite scale={[16, 16, 1]} renderOrder={-2}>
+        <spriteMaterial
+          map={glowTexture}
+          color="#ff5c0a"
+          transparent
+          opacity={0.24}
+          blending={AdditiveBlending}
+          depthWrite={false}
+        />
+      </sprite>
       <Sparkles
         count={52}
         scale={6.4}
@@ -326,6 +476,85 @@ function SunMesh({
         <BodyLabel name="The Sun" selected={selected} onClick={onSelect} />
       )}
     </group>
+  )
+}
+
+function PhobosModel({
+  radius,
+  onSelect,
+}: {
+  radius: number
+  onSelect: () => void
+}) {
+  const { scene } = useGLTF('/models/phobos-nasa.glb')
+  const model = useMemo(() => scene.clone(true), [scene])
+  const normalization = useMemo(() => {
+    const bounds = new Box3().setFromObject(model)
+    const center = bounds.getCenter(new Vector3())
+    const size = bounds.getSize(new Vector3())
+    const meanSemiAxis = (size.x + size.y + size.z) / 6
+    return {
+      center,
+      scale: radius / meanSemiAxis,
+    }
+  }, [model, radius])
+
+  return (
+    <group
+      rotation={[0, Math.PI / 2, 0]}
+      scale={normalization.scale}
+      onClick={(event) => {
+        event.stopPropagation()
+        onSelect()
+      }}
+    >
+      <primitive
+        object={model}
+        position={[
+          -normalization.center.x,
+          -normalization.center.y,
+          -normalization.center.z,
+        ]}
+      />
+    </group>
+  )
+}
+
+function TitanAtmosphere({
+  radius,
+  detailed,
+}: {
+  radius: number
+  detailed: boolean
+}) {
+  const geometry = detailed
+    ? HIGH_DETAIL_SPHERE_GEOMETRY
+    : LOW_DETAIL_SPHERE_GEOMETRY
+
+  return (
+    <>
+      <mesh scale={radius * 1.028} renderOrder={2}>
+        <primitive object={geometry} attach="geometry" />
+        <meshPhongMaterial
+          color="#e19132"
+          specular="#6b2e0f"
+          shininess={4}
+          transparent
+          opacity={0.46}
+          depthWrite={false}
+        />
+      </mesh>
+      <mesh scale={radius * 1.065} renderOrder={3}>
+        <primitive object={geometry} attach="geometry" />
+        <meshPhongMaterial
+          color="#ffad45"
+          side={BackSide}
+          transparent
+          opacity={0.18}
+          depthWrite={false}
+        />
+      </mesh>
+    </>
   )
 }
 
@@ -347,12 +576,9 @@ function MoonMesh({
   onSelect: () => void
 }) {
   const radius = Math.max(0.045, Math.min(0.14, moon.radiusKm / 18_000))
-  const mapped = hasBodyTexture(moon.id)
-  const texture = useMemo(
-    () => (mapped ? createPlanetTexture(moon.id) : undefined),
-    [mapped, moon.id],
-  )
-  const geometry = useBodyGeometry(moon.id, radius)
+  const mapped = hasBodyTexture(moon.id) && moon.id !== 'phobos'
+  const texture = useTransientTexture(moon.id, mapped && selected)
+  const geometry = bodyGeometry(moon.id, selected)
   const matrix = useMemo(
     () =>
       orientationMatrix(
@@ -377,33 +603,53 @@ function MoonMesh({
   return (
     <group position={position}>
       <group matrix={matrix} matrixAutoUpdate={false}>
-        <mesh
-          scale={bodyScale}
-          onClick={(event) => {
-            event.stopPropagation()
-            onSelect()
-          }}
-        >
-          <primitive object={geometry} attach="geometry" />
-          <meshStandardMaterial
-            map={texture}
-            color={mapped ? '#ffffff' : moon.color}
-            roughness={0.95}
-            metalness={0}
-            emissive="#000000"
-            emissiveIntensity={0}
-          />
-        </mesh>
-        {moon.id === 'titan' && (
-          <mesh scale={1.025}>
-            <sphereGeometry args={[radius, 48, 32]} />
-            <meshPhongMaterial
-              color="#e5a34e"
-              transparent
-              opacity={0.42}
-              depthWrite={false}
+        {moon.id === 'phobos' && selected ? (
+          <Suspense
+            fallback={
+              <mesh
+                scale={[
+                  bodyScale[0] * radius,
+                  bodyScale[1] * radius,
+                  bodyScale[2] * radius,
+                ]}
+              >
+                <primitive object={geometry} attach="geometry" />
+                <meshStandardMaterial
+                  color={moon.color}
+                  roughness={0.95}
+                  metalness={0}
+                />
+              </mesh>
+            }
+          >
+            <PhobosModel radius={radius} onSelect={onSelect} />
+          </Suspense>
+        ) : (
+          <mesh
+            scale={[
+              bodyScale[0] * radius,
+              bodyScale[1] * radius,
+              bodyScale[2] * radius,
+            ]}
+            onClick={(event) => {
+              event.stopPropagation()
+              onSelect()
+            }}
+          >
+            <primitive object={geometry} attach="geometry" />
+            <meshStandardMaterial
+              key={texture ? `mapped-${moon.id}` : `plain-${moon.id}`}
+              map={texture}
+              color={texture ? '#ffffff' : moon.color}
+              roughness={0.95}
+              metalness={0}
+              emissive="#000000"
+              emissiveIntensity={0}
             />
           </mesh>
+        )}
+        {moon.id === 'titan' && (
+          <TitanAtmosphere radius={radius} detailed={selected} />
         )}
       </group>
       {showLabel && selected && (
@@ -461,7 +707,6 @@ function OrbitingDust({
   const count = kind === 'asteroid' ? 4_600 : 3_000
   const positions = useMemo(() => {
     const values = new Float32Array(count * 3)
-    const days = julianDate(date) - 2_451_545
     for (let index = 0; index < count; index += 1) {
       const randomA = seededRandom(index * 7 + (kind === 'asteroid' ? 1 : 9))
       const randomB = seededRandom(index * 13 + 3)
@@ -472,8 +717,7 @@ function OrbitingDust({
           : 30 + Math.pow(randomA, 0.72) * 24
       const eccentricity =
         kind === 'asteroid' ? randomB * 0.2 : 0.03 + randomB * 0.22
-      const period = 365.256 * Math.pow(semiMajor, 1.5)
-      const phase = randomC * Math.PI * 2 + (days / period) * Math.PI * 2
+      const phase = randomC * Math.PI * 2
       const radius =
         (semiMajor * (1 - eccentricity ** 2)) /
         (1 + eccentricity * Math.cos(phase))
@@ -495,19 +739,26 @@ function OrbitingDust({
       values[index * 3 + 2] = position[2]
     }
     return values
-  }, [count, date, kind, scaleMode])
+  }, [count, kind, scaleMode])
+  const days = julianDate(date) - 2_451_545
+  const representativeSemiMajor = kind === 'asteroid' ? 2.75 : 42
+  const representativePeriod =
+    365.256 * Math.pow(representativeSemiMajor, 1.5)
+  const beltRotation = -((days / representativePeriod) * Math.PI * 2)
 
   return (
-    <Points positions={positions} stride={3} frustumCulled>
-      <PointMaterial
-        transparent
-        color={kind === 'asteroid' ? '#bca58a' : '#7395bc'}
-        size={kind === 'asteroid' ? 0.035 : 0.045}
-        sizeAttenuation
-        depthWrite={false}
-        opacity={kind === 'asteroid' ? 0.66 : 0.39}
-      />
-    </Points>
+    <group rotation={[0, beltRotation, 0]}>
+      <Points positions={positions} stride={3} frustumCulled>
+        <PointMaterial
+          transparent
+          color={kind === 'asteroid' ? '#bca58a' : '#7395bc'}
+          size={kind === 'asteroid' ? 0.035 : 0.045}
+          sizeAttenuation
+          depthWrite={false}
+          opacity={kind === 'asteroid' ? 0.66 : 0.39}
+        />
+      </Points>
+    </group>
   )
 }
 
@@ -583,16 +834,56 @@ function StarField() {
   )
 }
 
+function CometTail({
+  start,
+  end,
+  color,
+}: {
+  start: Vec3
+  end: Vec3
+  color: string
+}) {
+  const invalidate = useThree((state) => state.invalidate)
+  const geometry = useMemo(() => {
+    const result = new BufferGeometry()
+    result.setAttribute(
+      'position',
+      new BufferAttribute(new Float32Array(6), 3),
+    )
+    return result
+  }, [])
+
+  useLayoutEffect(() => {
+    const attribute = geometry.getAttribute('position') as BufferAttribute
+    const values = attribute.array as Float32Array
+    values[0] = start[0]
+    values[1] = start[1]
+    values[2] = start[2]
+    values[3] = end[0]
+    values[4] = end[1]
+    values[5] = end[2]
+    attribute.needsUpdate = true
+    geometry.computeBoundingSphere()
+    invalidate()
+  }, [end, geometry, invalidate, start])
+
+  useEffect(() => () => geometry.dispose(), [geometry])
+
+  return (
+    <lineSegments geometry={geometry}>
+      <lineBasicMaterial color={color} transparent opacity={0.42} />
+    </lineSegments>
+  )
+}
+
 function SmallBodies({
-  date,
-  scaleMode,
+  snapshots,
   labels,
   selectedId,
   onSelect,
   showComets,
 }: {
-  date: Date
-  scaleMode: ScaleMode
+  snapshots: Record<string, BodySnapshot>
   labels: boolean
   selectedId: string
   onSelect: (id: string) => void
@@ -603,7 +894,7 @@ function SmallBodies({
       {SMALL_BODIES.filter(
         (body) => body.kind !== 'comet' || showComets,
       ).map((body) => {
-        const position = mapAuToScene(orbitalPositionAu(body, date), scaleMode)
+        const position = snapshots[body.id].scenePosition
         const distance = Math.hypot(...position)
         const tailLength =
           body.kind === 'comet' ? Math.max(1.4, 7 / Math.max(0.7, distance)) : 0
@@ -617,26 +908,25 @@ function SmallBodies({
           position[2] + direction[2] * tailLength,
         ]
         const selected = selectedId === body.id
+        const bodyScale = body.scale ?? [1, 1, 1]
         return (
           <group key={body.id}>
             {body.kind === 'comet' && (
-              <Line
-                points={[position, tailEnd]}
-                color={body.color}
-                transparent
-                opacity={0.42}
-                lineWidth={2.2}
-              />
+              <CometTail start={position} end={tailEnd} color={body.color} />
             )}
             <group position={position}>
               <mesh
-                scale={body.scale ?? [1, 1, 1]}
+                scale={[
+                  body.radius * bodyScale[0],
+                  body.radius * bodyScale[1],
+                  body.radius * bodyScale[2],
+                ]}
                 onClick={(event) => {
                   event.stopPropagation()
                   onSelect(body.id)
                 }}
               >
-                <sphereGeometry args={[body.radius, 18, 12]} />
+                <primitive object={SMALL_BODY_GEOMETRY} attach="geometry" />
                 <meshStandardMaterial
                   color={body.color}
                   roughness={body.kind === 'comet' ? 0.72 : 0.95}
@@ -706,7 +996,7 @@ function Spacecraft({
               }}
               scale={selected ? 1.7 : 1}
             >
-              <octahedronGeometry args={[0.1, 0]} />
+              <primitive object={SPACECRAFT_GEOMETRY} attach="geometry" />
               <meshBasicMaterial color={craft.color} toneMapped={false} />
             </mesh>
             {(labels || selected) && (
@@ -731,13 +1021,13 @@ function Spacecraft({
 function CameraDirector({
   date,
   selectedId,
-  positions,
+  target,
   scaleMode,
   closeView,
 }: {
   date: Date
   selectedId: string
-  positions: Record<string, Vec3>
+  target: Vec3
   scaleMode: ScaleMode
   closeView: boolean
 }) {
@@ -762,7 +1052,6 @@ function CameraDirector({
   )
 
   useEffect(() => {
-    const target = positions[selectedId] ?? [0, 0, 0]
     if (!controls.current) return
 
     if (
@@ -821,7 +1110,7 @@ function CameraDirector({
       )
     }
   }, [
-    positions,
+    target,
     closeView,
     earthViewDirection,
     minimumDistance,
@@ -877,23 +1166,18 @@ function SceneContent({
     () => getMoonScenePositions(date, scaleMode, moonParents),
     [date, moonParents, scaleMode],
   )
-  const selectionPositions = useMemo(() => {
-    const positions: Record<string, Vec3> = {}
-    for (const [id, snapshot] of Object.entries(planets)) {
-      positions[id] = snapshot.scenePosition
-    }
-    Object.assign(positions, moons)
-    for (const [id, snapshot] of Object.entries(smallBodySnapshots)) {
-      positions[id] = snapshot.scenePosition
-    }
-    for (const craft of SPACECRAFT) {
-      positions[craft.id] = mapAuToScene(
-        spacecraftPositionAu(craft, date),
-        scaleMode,
-      )
-    }
-    return positions
-  }, [date, moons, planets, scaleMode, smallBodySnapshots])
+  const selectedPosition = useMemo(() => {
+    const planetPosition = planets[selectedId]?.scenePosition
+    if (planetPosition) return planetPosition
+    if (moons[selectedId]) return moons[selectedId]
+    const smallBodyPosition = smallBodySnapshots[selectedId]?.scenePosition
+    if (smallBodyPosition) return smallBodyPosition
+
+    const craft = SPACECRAFT.find((body) => body.id === selectedId)
+    return craft
+      ? mapAuToScene(spacecraftPositionAu(craft, date), scaleMode)
+      : ([0, 0, 0] as Vec3)
+  }, [date, moons, planets, scaleMode, selectedId, smallBodySnapshots])
 
   return (
     <>
@@ -940,8 +1224,7 @@ function SceneContent({
           />
         ))}
       <SmallBodies
-        date={date}
-        scaleMode={scaleMode}
+        snapshots={smallBodySnapshots}
         labels={layers.labels && !closeView}
         selectedId={selectedId}
         onSelect={onSelect}
@@ -959,19 +1242,11 @@ function SceneContent({
       <CameraDirector
         date={date}
         selectedId={selectedId}
-        positions={selectionPositions}
+        target={selectedPosition}
         scaleMode={scaleMode}
         closeView={closeView}
       />
-      <EffectComposer multisampling={0}>
-        <Bloom
-          luminanceThreshold={0.6}
-          luminanceSmoothing={0.4}
-          intensity={1.25}
-          mipmapBlur
-        />
-        <Vignette eskil={false} offset={0.12} darkness={0.72} />
-      </EffectComposer>
+      <RuntimeDiagnostics />
     </>
   )
 }
@@ -979,7 +1254,8 @@ function SceneContent({
 export function SolarSystemScene(props: SolarSystemSceneProps) {
   return (
     <Canvas
-      dpr={[1, 1.65]}
+      dpr={[1, 1.35]}
+      frameloop="demand"
       camera={{ position: [13, 9, 24], fov: 48, near: 0.001, far: 500 }}
       gl={{ antialias: true, powerPreference: 'high-performance' }}
       onPointerMissed={() => props.onSelect('sun')}
