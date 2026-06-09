@@ -9,11 +9,13 @@ import {
   getPlanetSnapshots,
   magnitude,
   mapAuToScene,
+  moonOrbitalPositionAu,
   orbitalPositionAu,
   scaleDistance,
   spacecraftPositionAu,
   synchronousOrientationBasis,
 } from './ephemeris'
+import type { MoonDefinition } from '../types'
 
 describe('body rotation', () => {
   it('builds an orthonormal Earth orientation basis', () => {
@@ -128,6 +130,16 @@ describe('planet ephemerides', () => {
     ])
     expect(delta).toBeGreaterThan(0.05)
   })
+
+  it('uses precision vectors supplied by the SPICE engine', () => {
+    const exactEarth: [number, number, number] = [0.25, -0.5, 0.75]
+    const planets = getPlanetSnapshots(date, 'true', {
+      earth: exactEarth,
+    })
+
+    expect(planets.earth.positionAu).toEqual(exactEarth)
+    expect(planets.earth.distanceAu).toBeCloseTo(Math.hypot(...exactEarth))
+  })
 })
 
 describe('display scale', () => {
@@ -159,6 +171,50 @@ describe('display scale', () => {
     ])
 
     expect(offset).toBeGreaterThan(0.82 * 2.26)
+  })
+})
+
+describe('moon mean-element coordinates', () => {
+  const epoch = new Date('2000-01-01T12:00:00Z')
+  const baseMoon: MoonDefinition = {
+    id: 'test-moon',
+    name: 'Test Moon',
+    parentId: 'earth',
+    radiusKm: 1,
+    orbitalRadiusKm: 149_597_870.7,
+    orbitalPeriodDays: 4,
+    phaseDegJ2000: 0,
+    meanAnomalyDeg: 0,
+    inclinationDeg: 0,
+    eccentricity: 0,
+    argumentPeriapsisDeg: 0,
+    ascendingNodeDeg: 90,
+    orbitFrame: 'ecliptic',
+    epochJd: 2_451_545,
+    color: '#ffffff',
+  }
+
+  it('maps JPL ecliptic coordinates into the app coordinate handedness', () => {
+    const position = moonOrbitalPositionAu(baseMoon, epoch)
+
+    expect(position[0]).toBeCloseTo(0, 8)
+    expect(position[1]).toBeCloseTo(0, 8)
+    expect(position[2]).toBeCloseTo(-1, 8)
+  })
+
+  it('uses inclination, rather than a negative period, for retrograde motion', () => {
+    const date = new Date(epoch.getTime() + 86_400_000)
+    const prograde = moonOrbitalPositionAu(
+      { ...baseMoon, ascendingNodeDeg: 0, inclinationDeg: 30 },
+      date,
+    )
+    const retrograde = moonOrbitalPositionAu(
+      { ...baseMoon, ascendingNodeDeg: 0, inclinationDeg: 150 },
+      date,
+    )
+
+    expect(prograde[2]).toBeLessThan(0)
+    expect(retrograde[2]).toBeGreaterThan(0)
   })
 })
 
@@ -197,6 +253,19 @@ describe('small-body orbital elements', () => {
     )
     expect(position.every(Number.isFinite)).toBe(true)
     expect(magnitude(position)).toBeGreaterThan(1)
+  })
+
+  it('solves unbound interstellar trajectories without NaN values', () => {
+    for (const id of ['oumuamua', 'borisov']) {
+      const visitor = SMALL_BODIES.find((body) => body.id === id)!
+      const position = orbitalPositionAu(
+        visitor,
+        new Date('2026-06-08T00:00:00Z'),
+      )
+      expect(visitor.eccentricity).toBeGreaterThan(1)
+      expect(position.every(Number.isFinite), id).toBe(true)
+      expect(magnitude(position), id).toBeGreaterThan(5)
+    }
   })
 
   it('keeps every tracked small-body orbit finite at the current epoch', () => {

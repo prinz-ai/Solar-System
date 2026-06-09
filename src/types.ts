@@ -2,6 +2,8 @@ export type Vec3 = [number, number, number]
 
 export type ScaleMode = 'explore' | 'true'
 
+export type SkyObserverId = string
+
 export type PrecisionLevel = 'ephemeris' | 'analytical' | 'statistical'
 
 export type SunViewMode =
@@ -33,19 +35,34 @@ export interface MoonDefinition {
   id: string
   name: string
   parentId: string
-  radiusKm: number
+  radiusKm?: number
   orbitalRadiusKm: number
   orbitalPeriodDays: number
   phaseDegJ2000: number
   inclinationDeg: number
   color: string
+  epochJd?: number
+  meanAnomalyDeg?: number
+  eccentricity?: number
+  argumentPeriapsisDeg?: number
+  ascendingNodeDeg?: number
+  orbitFrame?: 'ecliptic' | 'laplace' | 'equatorial'
+  retrograde?: boolean
+  jplCode?: string
+  ephemeris?: string
+  showLabel?: boolean
   exactModel?: 'earth-moon' | 'jupiter-io' | 'jupiter-europa' | 'jupiter-ganymede' | 'jupiter-callisto'
 }
 
 export interface OrbitalElements {
   id: string
   name: string
-  kind: 'dwarf' | 'asteroid' | 'comet'
+  kind:
+    | 'dwarf'
+    | 'dwarf-candidate'
+    | 'asteroid'
+    | 'comet'
+    | 'interstellar'
   epochJd: number
   semiMajorAxisAu: number
   eccentricity: number
@@ -59,6 +76,7 @@ export interface OrbitalElements {
   rotationHours?: number
   scale?: Vec3
   hasRings?: boolean
+  hasComa?: boolean
   fact: string
 }
 
@@ -80,6 +98,9 @@ export interface BodySnapshot {
 }
 
 export interface LayerSettings {
+  stars: boolean
+  milkyWay: boolean
+  constellations: boolean
   labels: boolean
   orbits: boolean
   moons: boolean
@@ -88,4 +109,9 @@ export interface LayerSettings {
   oortCloud: boolean
   comets: boolean
   spacecraft: boolean
+}
+
+export interface CinematicFocus {
+  id: string
+  targetIds: string[]
 }

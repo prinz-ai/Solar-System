@@ -33,13 +33,27 @@ describe('detailed render assets', () => {
           `${asset.texturePath} is missing`,
         ).toBe(true)
       }
+      if (asset.bumpMapPath) {
+        expect(
+          existsSync(
+            join(
+              process.cwd(),
+              'public',
+              asset.bumpMapPath.replace(/^\//, ''),
+            ),
+          ),
+          `${asset.bumpMapPath} is missing`,
+        ).toBe(true)
+      }
     }
   })
 
   it('uses the upgraded terrain and dense shape assets', () => {
     for (const id of [
       'moon',
+      'mars',
       'mercury',
+      'deimos',
       'enceladus',
       'ceres',
       'vesta',
@@ -51,6 +65,22 @@ describe('detailed render assets', () => {
     }
     for (const id of ['mercury', 'enceladus', 'ceres', 'vesta']) {
       expect(BODY_RENDER_ASSETS[id]?.texturePath).toBeDefined()
+      expect(BODY_RENDER_ASSETS[id]?.bumpMapPath).toBeDefined()
+    }
+    for (const id of [
+      'pluto',
+      'charon',
+      'bennu',
+      'ryugu',
+      'eros',
+      '67p',
+      'miranda',
+      'ariel',
+      'umbriel',
+      'titania',
+      'oberon',
+    ]) {
+      expect(BODY_RENDER_ASSETS[id]?.surfaceDetail).toBeDefined()
     }
   })
 

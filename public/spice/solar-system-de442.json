@@ -1,0 +1,35 @@
+{
+  "source": "NASA/JPL DE442",
+  "sourceUrl": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/de442.bsp",
+  "leapsecondsUrl": "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/lsk/naif0012.tls",
+  "frame": "ECLIPJ2000",
+  "coverage": [
+    "1550-01-01",
+    "2650-01-01"
+  ],
+  "interpolation": "SPK type 13, degree 15",
+  "targets": [
+    "mercury",
+    "venus",
+    "earth",
+    "mars",
+    "jupiter",
+    "saturn",
+    "uranus",
+    "neptune",
+    "pluto",
+    "moon"
+  ],
+  "validationMaxErrorKm": {
+    "mercury": 2.2591789991214925e-06,
+    "venus": 2.2029244003412934e-06,
+    "earth": 0.03901515498712429,
+    "mars": 2.55693421355247e-07,
+    "jupiter": 4.042915445488856e-05,
+    "saturn": 4.029252012503431e-05,
+    "uranus": 0.01591076608522207,
+    "neptune": 0.015910907210003752,
+    "pluto": 0.015912038580819524,
+    "moon": 2.0017962769649058e-07
+  }
+}

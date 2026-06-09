@@ -28,13 +28,16 @@ import {
   Rewind,
   RotateCcw,
   Satellite,
+  Search,
   Square,
   Sparkles,
+  Telescope,
   X,
 } from 'lucide-react'
 import { SolarSystemScene } from './components/SolarSystemScene'
 import {
   ALL_MAJOR_BODIES,
+  FEATURED_MOONS,
   MOONS,
   PLANETS,
   SMALL_BODIES,
@@ -45,18 +48,48 @@ import { getObjectDataSource } from './data/dataSources'
 import { getRenderCoverage } from './data/renderAssets'
 import {
   getPlanetSnapshots,
+  getMoonRelativePositionsAu,
   magnitude,
   orbitalPositionAu,
   spacecraftPositionAu,
 } from './lib/ephemeris'
+import {
+  computeEclipseEvents,
+  eclipseEventsForBody,
+  type EclipseBody,
+  type EclipseEvent,
+} from './lib/eclipses'
 import { useHorizonsEphemeris } from './lib/horizonsEphemeris'
 import { useMoonHorizonsEphemeris } from './lib/moonHorizonsEphemeris'
+import {
+  SPICE_SOURCE_NAME,
+  SPICE_SOURCE_URL,
+  useSpiceEphemeris,
+} from './lib/spiceEphemeris'
 import {
   advanceSimulationDate,
   type PlaybackDirection,
 } from './lib/simulationClock'
 import { closeViewAfterSelection } from './lib/cameraInteraction'
-import type { LayerSettings, ScaleMode, SunViewMode } from './types'
+import {
+  EARTH_OBSERVATION,
+  isEarthObservationCurrent,
+} from './lib/earthObservation'
+import {
+  searchObjects,
+  type SearchableObject,
+} from './lib/objectSearch'
+import {
+  findUpcomingCelestialEvents,
+  type CelestialEventGuide,
+} from './lib/celestialEvents'
+import type {
+  CinematicFocus,
+  LayerSettings,
+  ScaleMode,
+  SkyObserverId,
+  SunViewMode,
+} from './types'
 
 const SPEEDS = [
   { label: 'REAL TIME', value: 1 },
@@ -67,6 +100,9 @@ const SPEEDS = [
 ]
 
 const initialLayers: LayerSettings = {
+  stars: true,
+  milkyWay: true,
+  constellations: false,
   labels: true,
   orbits: true,
   moons: true,
@@ -77,11 +113,21 @@ const initialLayers: LayerSettings = {
   spacecraft: true,
 }
 
+const SKY_OBSERVER_OPTIONS: { id: SkyObserverId; label: string }[] = [
+  { id: 'earth', label: 'EARTH · GEOCENTER' },
+  { id: 'solar-system', label: 'SOLAR SYSTEM BARYCENTER' },
+  ...SPACECRAFT.map((spacecraft) => ({
+    id: spacecraft.id as SkyObserverId,
+    label: spacecraft.name.toUpperCase(),
+  })),
+]
+
 type ObjectCategory =
   | 'planets'
   | 'dwarfs'
   | 'comets'
   | 'asteroids'
+  | 'interstellar'
   | 'probes'
 
 const OBJECT_CATEGORIES: {
@@ -90,7 +136,16 @@ const OBJECT_CATEGORIES: {
   icon: React.ReactNode
 }[] = [
   { id: 'planets', label: 'PLANETS · 8', icon: <Orbit size={12} /> },
-  { id: 'dwarfs', label: 'DWARF PLANETS · 5', icon: <Atom size={12} /> },
+  {
+    id: 'dwarfs',
+    label: `DWARF WORLDS · ${
+      SMALL_BODIES.filter(
+        (body) =>
+          body.kind === 'dwarf' || body.kind === 'dwarf-candidate',
+      ).length + 1
+    }`,
+    icon: <Atom size={12} />,
+  },
   {
     id: 'comets',
     label: `COMETS · ${SMALL_BODIES.filter((body) => body.kind === 'comet').length}`,
@@ -99,6 +154,13 @@ const OBJECT_CATEGORIES: {
   {
     id: 'asteroids',
     label: `ASTEROIDS · ${SMALL_BODIES.filter((body) => body.kind === 'asteroid').length}`,
+    icon: <Sparkles size={12} />,
+  },
+  {
+    id: 'interstellar',
+    label: `INTERSTELLAR · ${
+      SMALL_BODIES.filter((body) => body.kind === 'interstellar').length
+    }`,
     icon: <Sparkles size={12} />,
   },
   {
@@ -222,13 +284,34 @@ function useSimulationClock() {
   }
 }
 
-function AccuracyBadge({ level }: { level: 'ephemeris' | 'analytical' | 'statistical' }) {
+function AccuracyBadge({
+  level,
+  label,
+}: {
+  level: 'ephemeris' | 'analytical' | 'statistical'
+  label?: string
+}) {
   const labels = {
     ephemeris: 'HIGH-PRECISION EPHEMERIS',
     analytical: 'ORBITAL MODEL',
     statistical: 'POPULATION MODEL',
   }
-  return <span className={`accuracy-badge ${level}`}>{labels[level]}</span>
+  return (
+    <span className={`accuracy-badge ${level}`}>
+      {label ?? labels[level]}
+    </span>
+  )
+}
+
+function eclipseEventLabel(event: EclipseEvent) {
+  const labels = {
+    'solar-eclipse': 'SOLAR ECLIPSE',
+    'lunar-eclipse': 'LUNAR ECLIPSE',
+    'moon-transit': 'SATELLITE TRANSIT',
+    'mutual-eclipse': 'MUTUAL SATELLITE ECLIPSE',
+    'mutual-occultation': 'MUTUAL OCCULTATION',
+  }
+  return labels[event.type]
 }
 
 function Inspector({
@@ -250,6 +333,7 @@ function Inspector({
   onSunViewModeChange: (mode: SunViewMode) => void
   onClose: () => void
 }) {
+  const spice = useSpiceEphemeris()
   const horizons = useHorizonsEphemeris()
   const moonHorizons = useMoonHorizonsEphemeris()
   const planet = ALL_MAJOR_BODIES.find((body) => body.id === selectedId)
@@ -258,16 +342,86 @@ function Inspector({
   const spacecraft = SPACECRAFT.find((body) => body.id === selectedId)
   const dataSource = getObjectDataSource(selectedId)
   const renderCoverage = getRenderCoverage(selectedId)
+  const spicePlanetPositions = useMemo(
+    () => spice.planetPositionsAu(date),
+    [date, spice],
+  )
+  const spiceMoonPosition = useMemo(
+    () => spice.moonPositionAu(date),
+    [date, spice],
+  )
   const planetSnapshots = useMemo(
-    () => getPlanetSnapshots(date, scaleMode),
-    [date, scaleMode],
+    () => getPlanetSnapshots(date, scaleMode, spicePlanetPositions),
+    [date, scaleMode, spicePlanetPositions],
+  )
+  const eclipseMoonVectors = useMemo(() => {
+    const vectors: Record<string, [number, number, number]> = {}
+    if (spiceMoonPosition) vectors.moon = spiceMoonPosition
+    for (const candidate of FEATURED_MOONS) {
+      if (candidate.id === 'moon' && spiceMoonPosition) continue
+      const vector = moonHorizons.positionAu(candidate.id, date)
+      if (vector) vectors[candidate.id] = vector
+    }
+    return vectors
+  }, [date, moonHorizons, spiceMoonPosition])
+  const eclipseEvents = useMemo(() => {
+    const relativeMoons = getMoonRelativePositionsAu(
+      date,
+      eclipseMoonVectors,
+      FEATURED_MOONS,
+    )
+    const bodies: EclipseBody[] = [
+      {
+        id: 'sun',
+        name: SUN.name,
+        radiusKm: SUN.radiusKm,
+        positionAu: [0, 0, 0],
+        kind: 'sun',
+      },
+      ...PLANETS.map((candidate) => ({
+        id: candidate.id,
+        name: candidate.name,
+        radiusKm: candidate.radiusKm,
+        positionAu: planetSnapshots[candidate.id].positionAu,
+        kind: 'planet' as const,
+      })),
+    ]
+    for (const candidate of FEATURED_MOONS) {
+      if (!candidate.radiusKm) continue
+      const parent = planetSnapshots[candidate.parentId]
+      const relative = relativeMoons[candidate.id]
+      if (!parent || !relative) continue
+      bodies.push({
+        id: candidate.id,
+        name: candidate.name,
+        radiusKm: candidate.radiusKm,
+        positionAu: [
+          parent.positionAu[0] + relative[0],
+          parent.positionAu[1] + relative[1],
+          parent.positionAu[2] + relative[2],
+        ],
+        parentId: candidate.parentId,
+        kind: 'moon',
+      })
+    }
+    return computeEclipseEvents(bodies)
+  }, [date, eclipseMoonVectors, planetSnapshots])
+  const selectedEclipseEvents = useMemo(
+    () => eclipseEventsForBody(eclipseEvents, selectedId).slice(0, 4),
+    [eclipseEvents, selectedId],
   )
   const [referenceNow] = useState(() => Date.now())
+  const currentEarthObservation =
+    selectedId === 'earth' && isEarthObservationCurrent(date)
 
   let title = ''
   let subtitle = ''
   let facts: string[] = []
   let precision: 'ephemeris' | 'analytical' | 'statistical' = 'analytical'
+  let precisionLabel: string | undefined
+  let orbitSource:
+    | { title: string; organization: string; url: string; note: string }
+    | undefined
   let accent = '#7cdcff'
   let stats: { label: string; value: string }[] = []
 
@@ -277,6 +431,22 @@ function Inspector({
     subtitle = planet.subtitle
     facts = planet.facts
     precision = planet.precision
+    if (planet.id !== 'sun' && spicePlanetPositions[planet.id]) {
+      precisionLabel = 'NASA/JPL DE442 · CSPICE'
+      orbitSource = {
+        title: 'DE442 planetary ephemeris',
+        organization: 'NASA/JPL Navigation and Ancillary Information Facility',
+        url: SPICE_SOURCE_URL,
+        note: 'Evaluated locally in CSPICE WebAssembly',
+      }
+    } else if (planet.id !== 'sun') {
+      orbitSource = {
+        title: 'Astronomy Engine planetary solution',
+        organization: 'Astronomy Engine',
+        url: 'https://github.com/cosinekitty/astronomy',
+        note: 'Fallback outside the DE442 range or while SPICE loads',
+      }
+    }
     accent = planet.accent
     stats = [
       {
@@ -314,8 +484,44 @@ function Inspector({
       SMALL_BODIES.find((body) => body.id === moon.parentId)
     title = moon.name
     subtitle = `Moon of ${parent?.name ?? moon.parentId}`
+    const usesSpice = moon.id === 'moon' && Boolean(spiceMoonPosition)
     precision =
-      moon.exactModel || horizonsPosition ? 'ephemeris' : 'analytical'
+      moon.exactModel || horizonsPosition || usesSpice
+        ? 'ephemeris'
+        : 'analytical'
+    if (usesSpice) {
+      precisionLabel = 'NASA/JPL DE442 · CSPICE'
+      orbitSource = {
+        title: 'DE442 Earth-Moon ephemeris',
+        organization: 'NASA/JPL Navigation and Ancillary Information Facility',
+        url: SPICE_SOURCE_URL,
+        note: 'Parent-relative state evaluated locally in CSPICE',
+      }
+    } else if (horizonsPosition) {
+      precisionLabel = 'NASA/JPL HORIZONS CACHE'
+      orbitSource = {
+        title: 'JPL Horizons trajectory vectors',
+        organization: 'NASA/JPL Solar System Dynamics',
+        url: 'https://ssd.jpl.nasa.gov/horizons/',
+        note: 'Dense parent-relative state-vector interpolation',
+      }
+    } else if (moon.exactModel) {
+      precisionLabel = 'SPECIALIZED SATELLITE MODEL'
+      orbitSource = {
+        title: 'Astronomy Engine satellite solution',
+        organization: 'Astronomy Engine',
+        url: 'https://github.com/cosinekitty/astronomy',
+        note: 'Fallback while DE442 loads or outside cached coverage',
+      }
+    } else if (moon.meanAnomalyDeg !== undefined) {
+      precisionLabel = 'JPL MEAN ELEMENTS'
+      orbitSource = {
+        title: 'JPL planetary satellite mean elements',
+        organization: 'NASA/JPL Solar System Dynamics',
+        url: 'https://ssd.jpl.nasa.gov/sats/elem/',
+        note: 'General orbit shape for the expanded moon catalog',
+      }
+    }
     accent = moon.color
     facts = [
       moon.id === 'mk2' || moon.id === 'dactyl'
@@ -326,13 +532,19 @@ function Inspector({
             moon.orbitalPeriodDays,
           ).toFixed(2)} Earth days.`,
       `Its average orbital distance is ${moon.orbitalRadiusKm.toLocaleString()} km.`,
-      moon.orbitalPeriodDays < 0
+      moon.retrograde || moon.orbitalPeriodDays < 0
         ? 'This moon travels in a retrograde direction, opposite its planet’s rotation.'
         : 'The moon’s current orbital phase updates with the simulation clock.',
     ]
     stats = [
       { label: 'PARENT', value: parent?.name ?? moon.parentId },
-      { label: 'RADIUS', value: `${moon.radiusKm.toLocaleString()} km` },
+      {
+        label: 'RADIUS',
+        value:
+          moon.radiusKm === undefined
+            ? 'UNKNOWN'
+            : `${moon.radiusKm.toLocaleString()} km`,
+      },
       {
         label: 'ORBIT',
         value: `${moon.orbitalRadiusKm.toLocaleString()} km`,
@@ -342,25 +554,53 @@ function Inspector({
         value: `${Math.abs(moon.orbitalPeriodDays).toFixed(2)} days`,
       },
     ]
+    if (moon.jplCode) {
+      stats.push({
+        label: 'JPL CODE',
+        value: moon.jplCode,
+      })
+    }
+    if (moon.ephemeris) {
+      stats.push({
+        label: 'SOLUTION',
+        value: moon.ephemeris,
+      })
+    }
   } else if (smallBody) {
     const horizonsPosition = horizons.positionAu(smallBody.id, date)
     const currentDistanceAu = magnitude(
       horizonsPosition ?? orbitalPositionAu(smallBody, date),
     )
     const periodDays =
-      365.2568983 * Math.pow(smallBody.semiMajorAxisAu, 1.5)
+      smallBody.eccentricity > 1
+        ? undefined
+        : 365.2568983 *
+          Math.pow(Math.abs(smallBody.semiMajorAxisAu), 1.5)
     title = smallBody.name
     subtitle =
-      smallBody.kind === 'comet'
+      smallBody.kind === 'interstellar'
+        ? 'Visitor from interstellar space'
+        : smallBody.kind === 'comet'
         ? 'Time-traveling ice and dust'
         : smallBody.kind === 'dwarf'
           ? 'IAU-recognized dwarf planet'
+          : smallBody.kind === 'dwarf-candidate'
+            ? 'Dwarf-planet candidate'
           : smallBody.semiMajorAxisAu > 30
             ? 'Kuiper Belt object'
             : smallBody.semiMajorAxisAu < 1.7
               ? 'Near-Earth asteroid'
               : 'Main-belt asteroid'
     precision = horizonsPosition ? 'ephemeris' : 'analytical'
+    if (horizonsPosition) {
+      precisionLabel = 'NASA/JPL HORIZONS CACHE'
+      orbitSource = {
+        title: 'JPL Horizons trajectory vectors',
+        organization: 'NASA/JPL Solar System Dynamics',
+        url: 'https://ssd.jpl.nasa.gov/horizons/',
+        note: 'Offline state-vector interpolation',
+      }
+    }
     accent = smallBody.color
     facts = [smallBody.fact]
     stats = [
@@ -377,7 +617,9 @@ function Inspector({
       {
         label: 'YEAR',
         value:
-          periodDays > 730
+          periodDays === undefined
+            ? 'UNBOUND'
+            : periodDays > 730
             ? `${(periodDays / 365.256).toFixed(1)} Earth years`
             : `${periodDays.toFixed(0)} days`,
       },
@@ -395,6 +637,15 @@ function Inspector({
     title = spacecraft.name
     subtitle = 'Interstellar explorer'
     precision = horizonsPosition ? 'ephemeris' : 'analytical'
+    if (horizonsPosition) {
+      precisionLabel = 'NASA/JPL HORIZONS CACHE'
+      orbitSource = {
+        title: 'JPL Horizons trajectory vectors',
+        organization: 'NASA/JPL Solar System Dynamics',
+        url: 'https://ssd.jpl.nasa.gov/horizons/',
+        note: 'Offline state-vector interpolation',
+      }
+    }
     accent = spacecraft.color
     facts = [
       spacecraft.fact,
@@ -435,10 +686,26 @@ function Inspector({
       },
     ]
   }
+  if (currentEarthObservation) {
+    stats = [
+      ...stats,
+      {
+        label: 'EARTH IMAGE',
+        value: `NASA VIIRS · ${EARTH_OBSERVATION.date}`,
+      },
+    ]
+  }
 
   if (!title) return null
   const liveSolarView =
     Math.abs(date.getTime() - referenceNow) < 12 * 3_600_000
+  const showDataSource =
+    dataSource &&
+    (!orbitSource ||
+      dataSource.url !== orbitSource.url ||
+      dataSource.title !== orbitSource.title)
+      ? dataSource
+      : undefined
 
   return (
     <aside className="inspector glass-panel" style={{ '--accent': accent } as React.CSSProperties}>
@@ -451,7 +718,7 @@ function Inspector({
       </div>
       <h2>{title}</h2>
       <p className="inspector-subtitle">{subtitle}</p>
-      <AccuracyBadge level={precision} />
+      <AccuracyBadge level={precision} label={precisionLabel} />
       <button
         className={`close-view-button ${closeView ? 'active' : ''}`}
         onClick={() => onCloseViewChange(!closeView)}
@@ -490,23 +757,96 @@ function Inspector({
           </div>
         ))}
       </div>
-      {dataSource && (
+      {selectedEclipseEvents.length > 0 && (
+        <div className="eclipse-events">
+          <span className="eclipse-events-title">
+            <Orbit size={12} />
+            ACTIVE SHADOW GEOMETRY
+          </span>
+          {selectedEclipseEvents.map((event) => {
+            const receiving = event.targetId === selectedId
+            const counterpart = receiving
+              ? event.occluderName
+              : event.targetName
+            const percentage = Math.max(
+              event.centerObscuration,
+              event.coverage,
+            )
+            return (
+              <div className="eclipse-event-card" key={event.id}>
+                <strong>{eclipseEventLabel(event)}</strong>
+                <span>
+                  {receiving ? `${counterpart} in front` : `Shadowing ${counterpart}`}
+                </span>
+                <small>
+                  {event.phase.toUpperCase()}
+                  {' · '}
+                  {(percentage * 100).toFixed(percentage < 0.01 ? 2 : 1)}%
+                  {event.type === 'mutual-occultation'
+                    ? ' apparent overlap'
+                    : ' geometric coverage'}
+                </small>
+              </div>
+            )
+          })}
+        </div>
+      )}
+      {orbitSource && (
         <a
-          className="data-source-card"
-          href={dataSource.url}
+          className="data-source-card orbit-source-card"
+          href={orbitSource.url}
           target="_blank"
           rel="noreferrer"
-          aria-label={`Open source data for ${title}: ${dataSource.title}`}
+          aria-label={`Open orbital data source for ${title}: ${orbitSource.title}`}
+        >
+          <span className="data-source-heading">
+            <Orbit size={12} />
+            ORBIT DATA
+            <ExternalLink size={11} />
+          </span>
+          <strong>{orbitSource.title}</strong>
+          <small>
+            {orbitSource.organization} · {orbitSource.note}
+          </small>
+        </a>
+      )}
+      {showDataSource && (
+        <a
+          className="data-source-card"
+          href={showDataSource.url}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={`Open source data for ${title}: ${showDataSource.title}`}
         >
           <span className="data-source-heading">
             <Database size={12} />
-            {dataSource.category}
+            {showDataSource.category}
             <ExternalLink size={11} />
           </span>
-          <strong>{dataSource.title}</strong>
+          <strong>{showDataSource.title}</strong>
           <small>
-            {dataSource.organization}
-            {dataSource.note ? ` · ${dataSource.note}` : ''}
+            {showDataSource.organization}
+            {showDataSource.note ? ` · ${showDataSource.note}` : ''}
+          </small>
+        </a>
+      )}
+      {currentEarthObservation && (
+        <a
+          className="data-source-card earth-observation-card"
+          href={EARTH_OBSERVATION.sourceUrl}
+          target="_blank"
+          rel="noreferrer"
+          aria-label="Open NASA GIBS Earth observation source"
+        >
+          <span className="data-source-heading">
+            <Database size={12} />
+            DATED EARTH OBSERVATION
+            <ExternalLink size={11} />
+          </span>
+          <strong>{EARTH_OBSERVATION.sourceName}</strong>
+          <small>
+            {EARTH_OBSERVATION.date} · Displayed only near the observation
+            date
           </small>
         </a>
       )}
@@ -527,6 +867,8 @@ const LayerPanel = memo(function LayerPanel({
   onChange,
   scaleMode,
   onScaleChange,
+  skyObserverId,
+  onSkyObserverChange,
   open,
   onClose,
 }: {
@@ -534,10 +876,16 @@ const LayerPanel = memo(function LayerPanel({
   onChange: (layers: LayerSettings) => void
   scaleMode: ScaleMode
   onScaleChange: (mode: ScaleMode) => void
+  skyObserverId: SkyObserverId
+  onSkyObserverChange: (observer: SkyObserverId) => void
   open: boolean
   onClose: () => void
 }) {
+  const spice = useSpiceEphemeris()
   const layerRows: { id: keyof LayerSettings; label: string; icon: React.ReactNode }[] = [
+    { id: 'stars', label: 'Gaia DR3 stars', icon: <Sparkles size={15} /> },
+    { id: 'milkyWay', label: 'Gaia Milky Way', icon: <Sparkles size={15} /> },
+    { id: 'constellations', label: 'IAU boundaries', icon: <Crosshair size={15} /> },
     { id: 'labels', label: 'Names & labels', icon: <Eye size={15} /> },
     { id: 'orbits', label: 'Orbit paths', icon: <Orbit size={15} /> },
     { id: 'moons', label: `Moons (${MOONS.length})`, icon: <Atom size={15} /> },
@@ -580,6 +928,22 @@ const LayerPanel = memo(function LayerPanel({
           ? 'Distances are logarithmically compressed. Orbital directions stay accurate.'
           : 'Orbital distances share one linear scale. Planet and moon sizes remain boosted.'}
       </p>
+      <label className="sky-observer-control">
+        <span>SKY OBSERVER</span>
+        <select
+          value={skyObserverId}
+          onChange={(event) =>
+            onSkyObserverChange(event.target.value as SkyObserverId)
+          }
+        >
+          {SKY_OBSERVER_OPTIONS.map((observer) => (
+            <option key={observer.id} value={observer.id}>
+              {observer.label}
+            </option>
+          ))}
+        </select>
+        <small>Proper motion and parallax update for this position.</small>
+      </label>
       <div className="layer-list">
         {layerRows.map((row) => (
           <button
@@ -596,10 +960,14 @@ const LayerPanel = memo(function LayerPanel({
       <div className="model-note">
         <Gauge size={16} />
         <p>
-          Planets use live analytical ephemerides. Small bodies and probes use
-          cached NASA/JPL Horizons state vectors from 2020 through 2040.
-          Twenty-six additional moons use dense Horizons vectors from 2025
-          through 2029. Orbital fallbacks apply outside those ranges.
+          {spice.status === 'ready'
+            ? `${SPICE_SOURCE_NAME} drives every planet and the Moon from ${spice.coverage[0]} through ${spice.coverage[1]}.`
+            : spice.status === 'loading'
+              ? `Loading ${SPICE_SOURCE_NAME}: ${Math.round(spice.progress * 100)}%. Analytical positions remain active until it is ready.`
+              : `The DE442 kernel is unavailable, so analytical planetary fallbacks are active.`}{' '}
+          Small bodies, probes, and twenty-six featured moons use cached
+          NASA/JPL Horizons vectors within their stated ranges. The remaining
+          catalog moons use JPL mean elements for general orbit shape.
         </p>
       </div>
     </aside>
@@ -743,6 +1111,83 @@ function TimeControls({
   )
 }
 
+function CelestialEventPanel({
+  events,
+  open,
+  onClose,
+  onActivate,
+}: {
+  events: CelestialEventGuide[]
+  open: boolean
+  onClose: () => void
+  onActivate: (event: CelestialEventGuide) => void
+}) {
+  if (!open) return null
+
+  return (
+    <aside className="event-director glass-panel">
+      <div className="panel-heading">
+        <div>
+          <span>CELESTIAL EVENT DIRECTOR</span>
+          <h3>Upcoming scenes</h3>
+        </div>
+        <button onClick={onClose} aria-label="Close celestial events">
+          <X size={15} />
+        </button>
+      </div>
+      <p className="event-director-intro">
+        Jump the simulation clock and frame the participating worlds.
+      </p>
+      <div className="event-list">
+        {events.map((event) => (
+          <button
+            key={event.id}
+            style={{ '--event-accent': event.accent } as React.CSSProperties}
+            onClick={() => onActivate(event)}
+          >
+            <span>{event.kind.replaceAll('-', ' ').toUpperCase()}</span>
+            <strong>{event.title}</strong>
+            <small>{event.subtitle}</small>
+            <time>{formatDate(event.date)}</time>
+          </button>
+        ))}
+      </div>
+    </aside>
+  )
+}
+
+function CinematicEventCaption({
+  event,
+  onClose,
+}: {
+  event: CelestialEventGuide
+  onClose: () => void
+}) {
+  return (
+    <div
+      className="event-caption glass-panel"
+      style={{ '--event-accent': event.accent } as React.CSSProperties}
+    >
+      <span>EVENT LOCK · {event.kind.replaceAll('-', ' ').toUpperCase()}</span>
+      <strong>{event.title}</strong>
+      <small>
+        {event.subtitle} · {formatDate(event.date)}
+      </small>
+      <button
+        onPointerDown={(event) => {
+          event.stopPropagation()
+        }}
+        onClick={(event) => {
+          event.stopPropagation()
+          onClose()
+        }}
+      >
+        EXIT CINEMATIC VIEW
+      </button>
+    </div>
+  )
+}
+
 interface DockObject {
   id: string
   name: string
@@ -763,6 +1208,7 @@ const ObjectNavigator = memo(function ObjectNavigator({
   onCategoryChange: (category: ObjectCategory) => void
   onSelect: (id: string) => void
 }) {
+  const [searchQuery, setSearchQuery] = useState('')
   const pluto = PLANETS.find((body) => body.id === 'pluto')!
   const objects: DockObject[] =
     category === 'planets'
@@ -780,7 +1226,11 @@ const ObjectNavigator = memo(function ObjectNavigator({
               color: pluto.color,
               visual: 'dwarf' as const,
             },
-            ...SMALL_BODIES.filter((body) => body.kind === 'dwarf').map(
+            ...SMALL_BODIES.filter(
+              (body) =>
+                body.kind === 'dwarf' ||
+                body.kind === 'dwarf-candidate',
+            ).map(
               (body) => ({
                 id: body.id,
                 name: body.name,
@@ -805,12 +1255,54 @@ const ObjectNavigator = memo(function ObjectNavigator({
                   visual: 'asteroid',
                 }),
               )
-            : SPACECRAFT.map((craft) => ({
-                id: craft.id,
-                name: craft.name,
-                color: craft.color,
-                visual: 'probe',
-              }))
+            : category === 'interstellar'
+              ? SMALL_BODIES.filter(
+                  (body) => body.kind === 'interstellar',
+                ).map((body) => ({
+                  id: body.id,
+                  name: body.name,
+                  color: body.color,
+                  visual: 'comet',
+                }))
+              : SPACECRAFT.map((craft) => ({
+                  id: craft.id,
+                  name: craft.name,
+                  color: craft.color,
+                  visual: 'probe',
+                }))
+
+  const searchableObjects = useMemo<SearchableObject[]>(() => {
+    const parents = new Map(
+      [...ALL_MAJOR_BODIES, ...SMALL_BODIES].map((body) => [body.id, body.name]),
+    )
+    return [
+      ...[SUN, ...PLANETS].map((body) => ({
+        id: body.id,
+        name: body.name,
+        kind: body.id === 'pluto' ? ('dwarf' as const) : ('planet' as const),
+      })),
+      ...MOONS.map((moon) => ({
+        id: moon.id,
+        name: moon.name,
+        kind: 'moon' as const,
+        parentName: parents.get(moon.parentId),
+      })),
+      ...SMALL_BODIES.map((body) => ({
+        id: body.id,
+        name: body.name,
+        kind: body.kind,
+      })),
+      ...SPACECRAFT.map((craft) => ({
+        id: craft.id,
+        name: craft.name,
+        kind: 'probe' as const,
+      })),
+    ]
+  }, [])
+  const searchResults = useMemo(
+    () => searchObjects(searchableObjects, searchQuery),
+    [searchQuery, searchableObjects],
+  )
 
   const parent =
     ALL_MAJOR_BODIES.find((body) => body.id === moonParentId) ??
@@ -821,7 +1313,10 @@ const ObjectNavigator = memo(function ObjectNavigator({
       (category === 'dwarfs' &&
         (parent.id === 'pluto' ||
           SMALL_BODIES.some(
-            (body) => body.id === parent.id && body.kind === 'dwarf',
+            (body) =>
+              body.id === parent.id &&
+              (body.kind === 'dwarf' ||
+                body.kind === 'dwarf-candidate'),
           ))) ||
       (category === 'asteroids' &&
         SMALL_BODIES.some(
@@ -830,9 +1325,69 @@ const ObjectNavigator = memo(function ObjectNavigator({
   const moons = parentMatchesCategory
     ? MOONS.filter((moon) => moon.parentId === moonParentId)
     : []
+  const visibleMoons =
+    moons.length > 18
+      ? moons.filter(
+          (moon) => moon.showLabel !== false || moon.id === selectedId,
+        )
+      : moons
+  const hasMoreMoons = visibleMoons.length < moons.length
 
   return (
     <nav className="object-browser glass-panel" aria-label="Tracked objects">
+      <div className="object-search">
+        <Search size={13} />
+        <input
+          value={searchQuery}
+          onChange={(event) => setSearchQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.preventDefault()
+              setSearchQuery('')
+            } else if (event.key === 'Enter' && searchResults[0]) {
+              event.preventDefault()
+              setSearchQuery('')
+              onSelect(searchResults[0].id)
+            }
+          }}
+          placeholder="Search planets, moons, probes..."
+          aria-label="Search tracked objects"
+          aria-expanded={searchQuery.length > 0}
+          aria-controls="object-search-results"
+        />
+        {searchQuery && (
+          <button
+            className="object-search-clear"
+            onClick={() => setSearchQuery('')}
+            aria-label="Clear object search"
+          >
+            <X size={11} />
+          </button>
+        )}
+      </div>
+      {searchQuery && (
+        <div className="object-search-results" id="object-search-results">
+          {searchResults.length > 0 ? (
+            searchResults.map((result) => (
+              <button
+                key={result.id}
+                onClick={() => {
+                  setSearchQuery('')
+                  onSelect(result.id)
+                }}
+              >
+                <strong>{result.name}</strong>
+                <small>
+                  {result.kind.toUpperCase()}
+                  {result.parentName ? ` · ${result.parentName}` : ''}
+                </small>
+              </button>
+            ))
+          ) : (
+            <span>No tracked object matches that search.</span>
+          )}
+        </div>
+      )}
       <div className="object-categories" role="tablist" aria-label="Object categories">
         {OBJECT_CATEGORIES.map((item) => (
           <button
@@ -851,10 +1406,10 @@ const ObjectNavigator = memo(function ObjectNavigator({
         <div className="moon-tray">
           <span className="moon-tray-title">
             <Atom size={12} />
-            {parent?.name.toUpperCase()}’S MOONS
+            {parent?.name.toUpperCase()}’S MOONS · {moons.length}
           </span>
           <div className="moon-items">
-            {moons.map((moon) => (
+            {visibleMoons.map((moon) => (
               <button
                 key={moon.id}
                 className={selectedId === moon.id ? 'active' : ''}
@@ -869,6 +1424,9 @@ const ObjectNavigator = memo(function ObjectNavigator({
               </button>
             ))}
           </div>
+          {hasMoreMoons && (
+            <span className="moon-tray-more">SEARCH +{moons.length - visibleMoons.length}</span>
+          )}
         </div>
       )}
       <div className="object-items">
@@ -906,6 +1464,7 @@ const ObjectNavigator = memo(function ObjectNavigator({
 
 function App() {
   const clock = useSimulationClock()
+  const spice = useSpiceEphemeris()
   const [scaleMode, setScaleMode] = useState<ScaleMode>('explore')
   const [selectedId, setSelectedId] = useState('earth')
   const [inspectorOpen, setInspectorOpen] = useState(true)
@@ -917,6 +1476,16 @@ function App() {
   const [closeView, setCloseView] = useState(false)
   const [sunViewMode, setSunViewMode] =
     useState<SunViewMode>('photosphere')
+  const [skyObserverId, setSkyObserverId] =
+    useState<SkyObserverId>('earth')
+  const [eventsOpen, setEventsOpen] = useState(false)
+  const [activeEvent, setActiveEvent] =
+    useState<CelestialEventGuide | null>(null)
+  const [eventSearchDate, setEventSearchDate] = useState(() => clock.date)
+  const upcomingEvents = useMemo(
+    () => findUpcomingCelestialEvents(eventSearchDate),
+    [eventSearchDate],
+  )
 
   const selectBody = useCallback((id: string) => {
     const planet = ALL_MAJOR_BODIES.find((body) => body.id === id)
@@ -932,7 +1501,9 @@ function App() {
         (body) => body.id === moon.parentId,
       )
       setObjectCategory(
-        moon.parentId === 'pluto' || smallParent?.kind === 'dwarf'
+        moon.parentId === 'pluto' ||
+        smallParent?.kind === 'dwarf' ||
+        smallParent?.kind === 'dwarf-candidate'
           ? 'dwarfs'
           : smallParent?.kind === 'asteroid'
             ? 'asteroids'
@@ -942,13 +1513,18 @@ function App() {
       setLayers((current) => ({ ...current, moons: true }))
     } else if (smallBody) {
       setObjectCategory(
-        smallBody.kind === 'dwarf'
+        smallBody.kind === 'dwarf' ||
+        smallBody.kind === 'dwarf-candidate'
           ? 'dwarfs'
           : smallBody.kind === 'comet'
             ? 'comets'
             : 'asteroids',
       )
       if (smallBody.kind === 'comet') {
+        setLayers((current) => ({ ...current, comets: true }))
+      }
+      if (smallBody.kind === 'interstellar') {
+        setObjectCategory('interstellar')
         setLayers((current) => ({ ...current, comets: true }))
       }
       if (MOONS.some((candidate) => candidate.parentId === smallBody.id)) {
@@ -960,6 +1536,7 @@ function App() {
     }
 
     setSelectedId(id)
+    setActiveEvent(null)
     setCloseView((current) =>
       closeViewAfterSelection(current, selectedId, id),
     )
@@ -967,6 +1544,27 @@ function App() {
     setLayersOpen(false)
   }, [selectedId])
   const closeLayers = useCallback(() => setLayersOpen(false), [])
+  const activateEvent = useCallback(
+    (event: CelestialEventGuide) => {
+      clock.chooseDate(event.date)
+      selectBody(event.focusId)
+      setCloseView(event.closeView)
+      setActiveEvent(event)
+      setEventsOpen(false)
+      setInspectorOpen(true)
+    },
+    [clock, selectBody],
+  )
+  const cinematicFocus = useMemo<CinematicFocus | undefined>(
+    () =>
+      activeEvent
+        ? {
+            id: activeEvent.id,
+            targetIds: activeEvent.targetIds,
+          }
+        : undefined,
+    [activeEvent],
+  )
 
   return (
     <main className="app-shell">
@@ -978,6 +1576,8 @@ function App() {
           selectedId={selectedId}
           closeView={closeView}
           sunViewMode={sunViewMode}
+          skyObserverId={skyObserverId}
+          cinematicFocus={cinematicFocus}
           onSelect={selectBody}
         />
       </div>
@@ -993,24 +1593,48 @@ function App() {
           </div>
         </div>
         <div className="top-status">
-          <span className="status-dot" />
-          LIVE EPHEMERIS
+          <span className={`status-dot ${spice.status}`} />
+          {spice.status === 'ready'
+            ? spice.supportsDate(clock.date)
+              ? 'DE442 SPICE READY'
+              : 'DE442 OUT OF RANGE'
+            : spice.status === 'loading'
+              ? `LOADING DE442 · ${Math.round(spice.progress * 100)}%`
+              : spice.status === 'error'
+                ? 'EPHEMERIS FALLBACK'
+                : 'STARTING EPHEMERIS'}
           <span className="divider" />
           {MOONS.length} MOONS
           <span className="divider" />
           <span className="desktop-only">J2000 ECLIPTIC FRAME</span>
         </div>
-        <button
-          className="layers-toggle"
-          onClick={() => {
-            const nextOpen = !layersOpen
-            setLayersOpen(nextOpen)
-            if (nextOpen) setInspectorOpen(false)
-          }}
-          aria-label="Open display layers"
-        >
-          <Menu size={20} />
-        </button>
+        <div className="topbar-actions">
+          <button
+            className={`events-toggle ${eventsOpen ? 'active' : ''}`}
+            onClick={() => {
+              const nextOpen = !eventsOpen
+              if (nextOpen) setEventSearchDate(clock.date)
+              setEventsOpen(nextOpen)
+              setLayersOpen(false)
+            }}
+            aria-label="Open celestial event director"
+          >
+            <Telescope size={18} />
+            <span>EVENTS</span>
+          </button>
+          <button
+            className="layers-toggle"
+            onClick={() => {
+              const nextOpen = !layersOpen
+              setLayersOpen(nextOpen)
+              setEventsOpen(false)
+              if (nextOpen) setInspectorOpen(false)
+            }}
+            aria-label="Open display layers"
+          >
+            <Menu size={20} />
+          </button>
+        </div>
       </header>
 
       {inspectorOpen && (
@@ -1031,8 +1655,17 @@ function App() {
         onChange={setLayers}
         scaleMode={scaleMode}
         onScaleChange={setScaleMode}
+        skyObserverId={skyObserverId}
+        onSkyObserverChange={setSkyObserverId}
         open={layersOpen}
         onClose={closeLayers}
+      />
+
+      <CelestialEventPanel
+        events={upcomingEvents}
+        open={eventsOpen}
+        onClose={() => setEventsOpen(false)}
+        onActivate={activateEvent}
       />
 
       <ObjectNavigator
@@ -1053,9 +1686,25 @@ function App() {
         onStartPlayback={clock.startPlayback}
         onStop={clock.stop}
         onSpeedChange={clock.chooseSpeed}
-        onDateChange={clock.chooseDate}
-        onLive={clock.goLive}
+        onDateChange={(date) => {
+          setActiveEvent(null)
+          clock.chooseDate(date)
+        }}
+        onLive={() => {
+          setActiveEvent(null)
+          clock.goLive()
+        }}
       />
+
+      {activeEvent && (
+        <CinematicEventCaption
+          event={activeEvent}
+          onClose={() => {
+            setActiveEvent(null)
+            setCloseView(false)
+          }}
+        />
+      )}
 
       <div className="interaction-hint">
         <RotateCcw size={14} />

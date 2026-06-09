@@ -1,0 +1,24 @@
+{
+  "catalog": "Gaia DR3",
+  "referenceEpoch": 2016,
+  "frame": "ICRS",
+  "recordFloats": 7,
+  "recordLayout": [
+    "ra_rad",
+    "dec_rad",
+    "parallax_mas",
+    "pmra_mas_per_year",
+    "pmdec_mas_per_year",
+    "phot_g_mean_mag",
+    "bp_rp"
+  ],
+  "brightCount": 50000,
+  "densityCount": 149547,
+  "totalCount": 199547,
+  "generatedAt": "2026-06-09T01:25:27.186Z",
+  "tapUrl": "https://gea.esac.esa.int/tap-server/tap/sync",
+  "queries": {
+    "bright": "SELECT TOP 50000\n  source_id, ra, dec, parallax, pmra, pmdec, phot_g_mean_mag, bp_rp\nFROM gaiadr3.gaia_source\nWHERE ra IS NOT NULL\n  AND dec IS NOT NULL\n  AND phot_g_mean_mag IS NOT NULL\nORDER BY phot_g_mean_mag ASC",
+    "density": "SELECT\n  source_id, ra, dec, parallax, pmra, pmdec, phot_g_mean_mag, bp_rp\nFROM gaiadr3.gaia_source\nWHERE random_index < 150000\n  AND ra IS NOT NULL\n  AND dec IS NOT NULL\n  AND phot_g_mean_mag IS NOT NULL"
+  }
+}

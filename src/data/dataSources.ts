@@ -1,6 +1,9 @@
+import { MOONS } from './bodies'
+
 export interface ObjectDataSource {
   category:
     | 'IMAGERY + SHADER'
+    | 'ATMOSPHERE + SURFACE'
     | 'SURFACE DATA'
     | '3D MODEL'
     | 'SHAPE DATA'
@@ -18,6 +21,14 @@ const HORIZONS_SOURCE: ObjectDataSource = {
   organization: 'NASA Jet Propulsion Laboratory',
   url: 'https://ssd.jpl.nasa.gov/horizons/',
   note: 'Appearance is representative',
+}
+
+const JPL_MEAN_ELEMENTS_SOURCE: ObjectDataSource = {
+  category: 'POSITION DATA',
+  title: 'JPL planetary satellite mean elements',
+  organization: 'NASA/JPL Solar System Dynamics',
+  url: 'https://ssd.jpl.nasa.gov/sats/elem/',
+  note: 'Representative appearance with mean-element orbital tracking',
 }
 
 const NASA_3D_SOURCE = (
@@ -52,11 +63,11 @@ export const OBJECT_DATA_SOURCES: Record<string, ObjectDataSource> = {
     url: 'https://astrogeology.usgs.gov/search/map/mercury-messenger-global-products',
   },
   venus: {
-    category: 'SURFACE DATA',
-    title: 'Magellan global radar mosaic',
+    category: 'ATMOSPHERE + SURFACE',
+    title: 'Mariner 10 cloud texture and Magellan radar mosaic',
     organization: 'NASA Jet Propulsion Laboratory',
     url: 'https://space.jpl.nasa.gov/tmaps/venus.html',
-    note: 'Shown beneath a representative opaque cloud layer',
+    note: 'Cloud appearance is representative rather than date-matched weather',
   },
   earth: {
     category: 'SURFACE DATA',
@@ -185,6 +196,20 @@ export const OBJECT_DATA_SOURCES: Record<string, ObjectDataSource> = {
     title: 'Representative orbit from Galileo observations',
     note: 'Orbit and appearance remain poorly constrained',
   },
+  dimorphos: {
+    category: 'POSITION DATA',
+    title: 'DART binary asteroid observations',
+    organization: 'NASA Double Asteroid Redirection Test',
+    url: 'https://science.nasa.gov/planetary-defense-dart/',
+    note: 'Representative binary orbit around Didymos',
+  },
+  menoetius: {
+    category: 'POSITION DATA',
+    title: 'Patroclus-Menoetius binary system',
+    organization: 'NASA Lucy Mission',
+    url: 'https://science.nasa.gov/mission/lucy/',
+    note: 'Representative binary orbit around Patroclus',
+  },
 
   ceres: {
     category: 'SURFACE DATA',
@@ -195,6 +220,10 @@ export const OBJECT_DATA_SOURCES: Record<string, ObjectDataSource> = {
   haumea: HORIZONS_SOURCE,
   makemake: HORIZONS_SOURCE,
   eris: HORIZONS_SOURCE,
+  sedna: HORIZONS_SOURCE,
+  quaoar: HORIZONS_SOURCE,
+  gonggong: HORIZONS_SOURCE,
+  orcus: HORIZONS_SOURCE,
   vesta: {
     category: 'SURFACE DATA',
     title: 'Dawn HAMO global terrain model and mosaic',
@@ -233,6 +262,18 @@ export const OBJECT_DATA_SOURCES: Record<string, ObjectDataSource> = {
   steins: PDS_SHAPE_SOURCE,
   gaspra: PDS_SHAPE_SOURCE,
   ida: PDS_SHAPE_SOURCE,
+  didymos: {
+    category: 'POSITION DATA',
+    title: 'Didymos system trajectory and physical data',
+    organization: 'NASA/JPL Solar System Dynamics',
+    url: 'https://ssd.jpl.nasa.gov/tools/sbdb_lookup.html#/?sstr=65803',
+  },
+  patroclus: {
+    category: 'POSITION DATA',
+    title: 'Patroclus system trajectory and physical data',
+    organization: 'NASA/JPL Solar System Dynamics',
+    url: 'https://ssd.jpl.nasa.gov/tools/sbdb_lookup.html#/?sstr=617',
+  },
   halley: HORIZONS_SOURCE,
   encke: HORIZONS_SOURCE,
   '67p': {
@@ -245,6 +286,18 @@ export const OBJECT_DATA_SOURCES: Record<string, ObjectDataSource> = {
   'tempel-1': PDS_SHAPE_SOURCE,
   'wild-2': PDS_SHAPE_SOURCE,
   neowise: HORIZONS_SOURCE,
+  oumuamua: {
+    category: 'POSITION DATA',
+    title: '1I/ʻOumuamua hyperbolic trajectory',
+    organization: 'NASA/JPL Solar System Dynamics',
+    url: 'https://ssd.jpl.nasa.gov/tools/sbdb_lookup.html#/?sstr=1I',
+  },
+  borisov: {
+    category: 'POSITION DATA',
+    title: '2I/Borisov hyperbolic trajectory',
+    organization: 'NASA/JPL Solar System Dynamics',
+    url: 'https://ssd.jpl.nasa.gov/tools/sbdb_lookup.html#/?sstr=2I',
+  },
 
   'voyager-1': {
     category: 'SPACECRAFT MODEL',
@@ -278,6 +331,11 @@ export const OBJECT_DATA_SOURCES: Record<string, ObjectDataSource> = {
   },
 }
 
+const TRACKED_MOON_IDS = new Set(MOONS.map((moon) => moon.id))
+
 export function getObjectDataSource(id: string) {
-  return OBJECT_DATA_SOURCES[id]
+  return (
+    OBJECT_DATA_SOURCES[id] ??
+    (TRACKED_MOON_IDS.has(id) ? JPL_MEAN_ELEMENTS_SOURCE : undefined)
+  )
 }

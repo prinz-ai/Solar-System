@@ -8,6 +8,10 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "test": "vitest run",
+    "generate:sky": "node scripts/generate-gaia-sky-catalog.mjs",
+    "generate:moons": "node scripts/generate-jpl-moon-catalog.mjs",
+    "generate:ephemeris": "node scripts/generate-horizons-ephemeris.mjs",
+    "update:earth": "node scripts/update-earth-observation.mjs",
     "check": "npm run lint && npm run test && npm run build"
   },
   "dependencies": {
@@ -18,6 +22,7 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "three": "^0.184.0",
+    "webspice": "^0.0.2",
     "zustand": "^5.0.8"
   },
   "devDependencies": {

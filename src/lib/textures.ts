@@ -2,6 +2,8 @@ import {
   CanvasTexture,
   Color,
   LinearFilter,
+  LinearMipmapLinearFilter,
+  NoColorSpace,
   RepeatWrapping,
   SRGBColorSpace,
   Texture,
@@ -49,7 +51,7 @@ export interface CloudLayerDefinition {
 
 const CLOUD_LAYERS: Record<string, CloudLayerDefinition> = {
   venus: {
-    color: '#fff4c9',
+    color: '#fffaf0',
     opacity: 1,
     scale: 1.012,
     rotationHours: -96,
@@ -57,7 +59,7 @@ const CLOUD_LAYERS: Record<string, CloudLayerDefinition> = {
   },
   earth: {
     color: '#ffffff',
-    opacity: 0.48,
+    opacity: 1,
     scale: 1.012,
     rotationHours: 20,
   },
@@ -95,7 +97,12 @@ const CLOUD_LAYERS: Record<string, CloudLayerDefinition> = {
 
 const IMAGE_TEXTURES: Record<
   string,
-  { url: string; longitudeDirection: 'east' | 'west' }
+  {
+    url: string
+    longitudeDirection: 'east' | 'west'
+    highDetail?: boolean
+    dataTexture?: boolean
+  }
 > = {
   mercury: {
     url: '/textures/mercury-messenger.jpg',
@@ -105,9 +112,30 @@ const IMAGE_TEXTURES: Record<
     url: '/textures/venus-magellan.jpg',
     longitudeDirection: 'east',
   },
+  'venus-clouds': {
+    url: '/textures/venus-mariner-clouds.jpg',
+    longitudeDirection: 'east',
+  },
   earth: {
     url: '/textures/earth-blue-marble-bathymetry.jpg',
     longitudeDirection: 'east',
+    highDetail: true,
+  },
+  'earth-observation': {
+    url: '/earth/viirs-latest.jpg',
+    longitudeDirection: 'east',
+    highDetail: true,
+  },
+  'earth-clouds': {
+    url: '/earth/clouds-representative.webp',
+    longitudeDirection: 'east',
+    highDetail: true,
+  },
+  'earth-roughness': {
+    url: '/textures/earth-roughness.jpg',
+    longitudeDirection: 'east',
+    highDetail: true,
+    dataTexture: true,
   },
   moon: {
     url: '/textures/moon-lro.jpg',
@@ -130,25 +158,68 @@ const IMAGE_TEXTURES: Record<
     longitudeDirection: 'west',
   },
   io: {
-    url: '/textures/io-galileo.jpg',
+    url: '/textures/io-galileo-4k.webp',
     longitudeDirection: 'west',
+    highDetail: true,
   },
   europa: {
     url: '/textures/europa-voyager.jpg',
     longitudeDirection: 'west',
+    highDetail: true,
   },
   ganymede: {
-    url: '/textures/ganymede-galileo.jpg',
+    url: '/textures/ganymede-galileo-4k.webp',
     longitudeDirection: 'west',
+    highDetail: true,
   },
   callisto: {
-    url: '/textures/callisto-voyager.jpg',
+    url: '/textures/callisto-voyager-4k.webp',
     longitudeDirection: 'west',
+    highDetail: true,
   },
   titan: {
     url: '/textures/titan-cassini-radar.jpg',
     longitudeDirection: 'west',
+    highDetail: true,
   },
+  'io-relief': {
+    url: '/textures/relief/io.webp',
+    longitudeDirection: 'west',
+    highDetail: true,
+    dataTexture: true,
+  },
+  'europa-relief': {
+    url: '/textures/relief/europa.webp',
+    longitudeDirection: 'west',
+    highDetail: true,
+    dataTexture: true,
+  },
+  'ganymede-relief': {
+    url: '/textures/relief/ganymede.webp',
+    longitudeDirection: 'west',
+    highDetail: true,
+    dataTexture: true,
+  },
+  'callisto-relief': {
+    url: '/textures/relief/callisto.webp',
+    longitudeDirection: 'west',
+    highDetail: true,
+    dataTexture: true,
+  },
+  'titan-relief': {
+    url: '/textures/relief/titan.webp',
+    longitudeDirection: 'west',
+    highDetail: true,
+    dataTexture: true,
+  },
+}
+
+const SURFACE_RELIEF: Record<string, { textureId: string; bumpScale: number }> = {
+  io: { textureId: 'io-relief', bumpScale: 0.012 },
+  europa: { textureId: 'europa-relief', bumpScale: 0.016 },
+  ganymede: { textureId: 'ganymede-relief', bumpScale: 0.02 },
+  callisto: { textureId: 'callisto-relief', bumpScale: 0.024 },
+  titan: { textureId: 'titan-relief', bumpScale: 0.012 },
 }
 
 export function hasBodyTexture(id: string) {
@@ -161,6 +232,10 @@ export function usesWestLongitudeTexture(id: string) {
 
 export function getCloudLayerDefinition(id: string) {
   return CLOUD_LAYERS[id]
+}
+
+export function getSurfaceReliefDefinition(id: string) {
+  return SURFACE_RELIEF[id]
 }
 
 function hash(x: number, y: number, seed: number) {
@@ -449,7 +524,15 @@ function cloudPixel(
 }
 
 function createCloudTexture(id: string) {
-  const width = id === 'venus' || id === 'earth' ? 1024 : 768
+  const width =
+    id === 'venus' || id === 'earth'
+      ? 1024
+      : id === 'jupiter' ||
+          id === 'saturn' ||
+          id === 'uranus' ||
+          id === 'neptune'
+        ? 1536
+        : 1024
   const height = width / 2
   const canvas = document.createElement('canvas')
   canvas.width = width
@@ -478,10 +561,10 @@ function createCloudTexture(id: string) {
   const texture = new CanvasTexture(canvas)
   texture.colorSpace = SRGBColorSpace
   texture.wrapS = RepeatWrapping
-  texture.minFilter = LinearFilter
+  texture.minFilter = LinearMipmapLinearFilter
   texture.magFilter = LinearFilter
-  texture.generateMipmaps = false
-  texture.anisotropy = 4
+  texture.generateMipmaps = true
+  texture.anisotropy = 12
   return texture
 }
 
@@ -577,6 +660,23 @@ export function createPlanetTexture(
   }
 
   if (id.endsWith('-clouds')) {
+    const imageTexture = IMAGE_TEXTURES[id]
+    if (imageTexture) {
+      const texture = new TextureLoader().load(imageTexture.url, () => {
+        notifyTextureReady(texture)
+      })
+      texture.colorSpace = SRGBColorSpace
+      texture.wrapS = RepeatWrapping
+      texture.minFilter = imageTexture.highDetail
+        ? LinearMipmapLinearFilter
+        : LinearFilter
+      texture.magFilter = LinearFilter
+      texture.generateMipmaps = Boolean(imageTexture.highDetail)
+      texture.anisotropy = imageTexture.highDetail ? 16 : 8
+      textureCache.set(id, texture)
+      onTextureReady(texture, readyCallback)
+      return texture
+    }
     const bodyId = id.slice(0, -'-clouds'.length)
     const texture = createCloudTexture(bodyId)
     notifyTextureReady(texture)
@@ -606,12 +706,16 @@ export function createPlanetTexture(
     const texture = new TextureLoader().load(imageTexture.url, () => {
       notifyTextureReady(texture)
     })
-    texture.colorSpace = SRGBColorSpace
+    texture.colorSpace = imageTexture.dataTexture
+      ? NoColorSpace
+      : SRGBColorSpace
     texture.wrapS = RepeatWrapping
-    texture.minFilter = LinearFilter
+    texture.minFilter = imageTexture.highDetail
+      ? LinearMipmapLinearFilter
+      : LinearFilter
     texture.magFilter = LinearFilter
-    texture.generateMipmaps = false
-    texture.anisotropy = 8
+    texture.generateMipmaps = Boolean(imageTexture.highDetail)
+    texture.anisotropy = imageTexture.highDetail ? 16 : 8
     textureCache.set(id, texture)
     onTextureReady(texture, readyCallback)
     return texture

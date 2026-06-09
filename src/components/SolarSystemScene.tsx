@@ -15,12 +15,15 @@ import {
   BufferGeometry,
   Color,
   Material,
+  LinearMipmapLinearFilter,
   Matrix4,
   Mesh,
   MeshStandardMaterial,
+  NoColorSpace,
   OctahedronGeometry,
   Object3D,
   Quaternion,
+  RepeatWrapping,
   SphereGeometry,
   SRGBColorSpace,
   Texture,
@@ -30,7 +33,14 @@ import {
 } from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
-import { MOONS, PLANETS, SMALL_BODIES, SPACECRAFT, SUN } from '../data/bodies'
+import {
+  FEATURED_MOONS,
+  MOONS,
+  PLANETS,
+  SMALL_BODIES,
+  SPACECRAFT,
+  SUN,
+} from '../data/bodies'
 import {
   getRenderAsset,
   type RenderAsset,
@@ -38,9 +48,9 @@ import {
 import {
   bodyOrientationBasis,
   bodyRotationAngle,
-  earthSurfaceDirection,
   generateOrbitPath,
   getMoonScenePositions,
+  getMoonRelativePositionsAu,
   getPlanetSnapshots,
   julianDate,
   mapAuToScene,
@@ -48,23 +58,34 @@ import {
   spacecraftPositionAu,
   synchronousOrientationBasis,
 } from '../lib/ephemeris'
+import {
+  computeEclipseEvents,
+  type EclipseEvent,
+  type EclipseBody,
+} from '../lib/eclipses'
 import { useHorizonsEphemeris } from '../lib/horizonsEphemeris'
 import { useMoonHorizonsEphemeris } from '../lib/moonHorizonsEphemeris'
+import { useSpiceEphemeris } from '../lib/spiceEphemeris'
 import {
   createPlanetTexture,
   getCloudLayerDefinition,
   getLoadedTextureIds,
+  getSurfaceReliefDefinition,
   hasBodyTexture,
   releasePlanetTexture,
   usesWestLongitudeTexture,
 } from '../lib/textures'
 import { isSelectionClick } from '../lib/cameraInteraction'
+import { isEarthObservationCurrent } from '../lib/earthObservation'
+import { GaiaSky } from './GaiaSky'
 import type {
   BodySnapshot,
+  CinematicFocus,
   LayerSettings,
   MoonDefinition,
   PlanetDefinition,
   ScaleMode,
+  SkyObserverId,
   SunViewMode,
   Vec3,
 } from '../types'
@@ -76,6 +97,8 @@ interface SolarSystemSceneProps {
   selectedId: string
   closeView: boolean
   sunViewMode: SunViewMode
+  skyObserverId: SkyObserverId
+  cinematicFocus?: CinematicFocus
   onSelect: (id: string) => void
 }
 
@@ -88,12 +111,16 @@ function selectFromSceneClick(
 }
 
 const HIGH_DETAIL_SPHERE_GEOMETRY = new SphereGeometry(1, 64, 48)
+const EARTH_HIGH_DETAIL_SPHERE_GEOMETRY = new SphereGeometry(1, 128, 96)
 const LOW_DETAIL_SPHERE_GEOMETRY = new SphereGeometry(1, 32, 24)
 const WEST_HIGH_DETAIL_SPHERE_GEOMETRY =
   HIGH_DETAIL_SPHERE_GEOMETRY.clone()
 const WEST_LOW_DETAIL_SPHERE_GEOMETRY = LOW_DETAIL_SPHERE_GEOMETRY.clone()
 const SMALL_BODY_GEOMETRY = new SphereGeometry(1, 18, 12)
 const SPACECRAFT_GEOMETRY = new OctahedronGeometry(0.1, 0)
+const CATALOG_MOON_GEOMETRY = new OctahedronGeometry(1, 1)
+const FEATURED_MOON_IDS = new Set(FEATURED_MOONS.map((moon) => moon.id))
+const CATALOG_MOONS = MOONS.filter((moon) => !FEATURED_MOON_IDS.has(moon.id))
 const PIONEER_DISH_PROFILE = Array.from({ length: 25 }, (_, index) => {
   const radius = (index / 24) * 1.37
   return new Vector2(radius, radius * radius * 0.14)
@@ -187,9 +214,13 @@ function BodyLabel({
 function RingSystem({
   radius,
   bodyId,
+  bodyCenter,
+  sunDirection,
 }: {
   radius: number
   bodyId: string
+  bodyCenter: Vec3
+  sunDirection: Vec3
 }) {
   const ringBand = (
     centerKm: number,
@@ -258,6 +289,13 @@ function RingSystem({
             roughness={0.82}
             metalness={0}
           />
+          <PlanetShadowOnRing
+            innerRadius={radius * inner}
+            outerRadius={radius * outer}
+            bodyCenter={bodyCenter}
+            sunDirection={sunDirection}
+            planetRadius={radius}
+          />
         </mesh>
       ))}
       {bodyId === 'neptune' &&
@@ -288,7 +326,278 @@ function RingSystem({
   )
 }
 
+const BODY_SHADOW_VERTEX_SHADER = `
+  varying vec3 vSurfaceDirection;
+
+  void main() {
+    vSurfaceDirection = normalize(position);
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`
+
+const BODY_SHADOW_FRAGMENT_SHADER = `
+  precision highp float;
+
+  uniform vec3 uShadowDirection;
+  uniform float uPenumbraRadius;
+  uniform float uUmbraRadius;
+  uniform vec3 uShadowColor;
+  uniform float uStrength;
+  varying vec3 vSurfaceDirection;
+
+  void main() {
+    float angle = acos(clamp(dot(normalize(vSurfaceDirection), normalize(uShadowDirection)), -1.0, 1.0));
+    float penumbraSoftness = max(0.025, uPenumbraRadius * 0.18);
+    float penumbra = 1.0 - smoothstep(
+      max(0.0, uPenumbraRadius - penumbraSoftness),
+      uPenumbraRadius + penumbraSoftness,
+      angle
+    );
+    float umbra = 0.0;
+    if (uUmbraRadius > 0.0001) {
+      float umbraSoftness = max(0.012, uUmbraRadius * 0.16);
+      umbra = 1.0 - smoothstep(
+        max(0.0, uUmbraRadius - umbraSoftness),
+        uUmbraRadius + umbraSoftness,
+        angle
+      );
+    }
+    float alpha = (penumbra * 0.28 + umbra * 0.62) * uStrength;
+    if (alpha < 0.002) discard;
+    gl_FragColor = vec4(uShadowColor, clamp(alpha, 0.0, 0.92));
+  }
+`
+
+const RING_SHADOW_VERTEX_SHADER = `
+  varying vec3 vSurfaceDirection;
+
+  void main() {
+    vSurfaceDirection = normalize(position);
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`
+
+const RING_SHADOW_FRAGMENT_SHADER = `
+  precision highp float;
+
+  uniform vec3 uSunDirection;
+  uniform vec3 uRingNormal;
+  uniform vec3 uBands;
+  uniform vec3 uBandOuter;
+  varying vec3 vSurfaceDirection;
+
+  float bandMask(float radius, float innerRadius, float outerRadius) {
+    if (outerRadius <= innerRadius) return 0.0;
+    float edge = 0.018;
+    return smoothstep(innerRadius - edge, innerRadius + edge, radius) *
+      (1.0 - smoothstep(outerRadius - edge, outerRadius + edge, radius));
+  }
+
+  void main() {
+    vec3 point = normalize(vSurfaceDirection);
+    vec3 sunDirection = normalize(uSunDirection);
+    vec3 ringNormal = normalize(uRingNormal);
+    float denominator = dot(sunDirection, ringNormal);
+    if (abs(denominator) < 0.0001 || dot(point, sunDirection) <= 0.0) discard;
+    float distanceToPlane = -dot(point, ringNormal) / denominator;
+    if (distanceToPlane <= 0.0) discard;
+    vec3 intersection = point + sunDirection * distanceToPlane;
+    float radialDistance = length(
+      intersection - ringNormal * dot(intersection, ringNormal)
+    );
+    float mask = max(
+      bandMask(radialDistance, uBands.x, uBandOuter.x),
+      max(
+        bandMask(radialDistance, uBands.y, uBandOuter.y),
+        bandMask(radialDistance, uBands.z, uBandOuter.z)
+      )
+    );
+    if (mask < 0.002) discard;
+    gl_FragColor = vec4(vec3(0.008, 0.012, 0.019), mask * 0.68);
+  }
+`
+
+const PLANET_RING_SHADOW_VERTEX_SHADER = `
+  uniform vec3 uBodyCenter;
+  varying vec3 vRelativePosition;
+
+  void main() {
+    vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+    vRelativePosition = worldPosition.xyz - uBodyCenter;
+    gl_Position = projectionMatrix * viewMatrix * worldPosition;
+  }
+`
+
+const PLANET_RING_SHADOW_FRAGMENT_SHADER = `
+  precision highp float;
+
+  uniform vec3 uSunDirection;
+  uniform float uPlanetRadius;
+  varying vec3 vRelativePosition;
+
+  void main() {
+    vec3 rayDirection = normalize(uSunDirection);
+    float projected = dot(vRelativePosition, rayDirection);
+    float radiusTerm =
+      dot(vRelativePosition, vRelativePosition) -
+      uPlanetRadius * uPlanetRadius;
+    float discriminant = projected * projected - radiusTerm;
+    if (discriminant <= 0.0) discard;
+    float nearIntersection = -projected - sqrt(discriminant);
+    if (nearIntersection <= 0.0) discard;
+    gl_FragColor = vec4(0.003, 0.006, 0.012, 0.78);
+  }
+`
+
+function PlanetShadowOnRing({
+  innerRadius,
+  outerRadius,
+  bodyCenter,
+  sunDirection,
+  planetRadius,
+}: {
+  innerRadius: number
+  outerRadius: number
+  bodyCenter: Vec3
+  sunDirection: Vec3
+  planetRadius: number
+}) {
+  const uniforms = useMemo(
+    () => ({
+      uBodyCenter: { value: new Vector3(...bodyCenter) },
+      uSunDirection: { value: new Vector3(...sunDirection) },
+      uPlanetRadius: { value: planetRadius },
+    }),
+    [bodyCenter, planetRadius, sunDirection],
+  )
+
+  return (
+    <mesh renderOrder={5}>
+      <ringGeometry args={[innerRadius, outerRadius, 128]} />
+      <shaderMaterial
+        vertexShader={PLANET_RING_SHADOW_VERTEX_SHADER}
+        fragmentShader={PLANET_RING_SHADOW_FRAGMENT_SHADER}
+        uniforms={uniforms}
+        transparent
+        depthWrite={false}
+        polygonOffset
+        polygonOffsetFactor={-2}
+      />
+    </mesh>
+  )
+}
+
+function BodyShadowOverlays({
+  radius,
+  events,
+}: {
+  radius: number
+  events: EclipseEvent[]
+}) {
+  return events
+    .filter((event) => event.type !== 'mutual-occultation')
+    .map((event) => {
+      const lunar = event.type === 'lunar-eclipse'
+      const totalLunar = lunar && event.phase === 'total'
+      const uniforms = {
+        uShadowDirection: {
+          value: new Vector3(...event.shadowDirection),
+        },
+        uPenumbraRadius: { value: event.penumbraAngularRadius },
+        uUmbraRadius: { value: event.umbraAngularRadius },
+        uShadowColor: {
+          value: new Color(
+            totalLunar ? '#8a321b' : lunar ? '#35100b' : '#02040a',
+          ),
+        },
+        uStrength: {
+          value: totalLunar ? 0.38 : 1,
+        },
+      }
+      return (
+        <mesh
+          key={event.id}
+          scale={radius * 1.008}
+          renderOrder={6}
+        >
+          <primitive object={HIGH_DETAIL_SPHERE_GEOMETRY} attach="geometry" />
+          <shaderMaterial
+            vertexShader={BODY_SHADOW_VERTEX_SHADER}
+            fragmentShader={BODY_SHADOW_FRAGMENT_SHADER}
+            uniforms={uniforms}
+            transparent
+            depthWrite={false}
+          />
+        </mesh>
+      )
+    })
+}
+
+function RingShadowOverlay({
+  radius,
+  bodyId,
+  sunDirection,
+  ringNormal,
+}: {
+  radius: number
+  bodyId: string
+  sunDirection: Vec3
+  ringNormal: Vec3
+}) {
+  const { bands, uniforms } = useMemo(() => {
+    const nextBands =
+      bodyId === 'saturn'
+        ? [[1.28, 2.26]]
+        : bodyId === 'uranus'
+          ? [
+              [1.48, 2.03],
+              [2.56, 4.48],
+            ]
+          : bodyId === 'neptune'
+            ? [[1.65, 2.55]]
+            : []
+    return {
+      bands: nextBands,
+      uniforms: {
+        uSunDirection: { value: new Vector3(...sunDirection) },
+        uRingNormal: { value: new Vector3(...ringNormal) },
+        uBands: {
+          value: new Vector3(
+            nextBands[0]?.[0] ?? 0,
+            nextBands[1]?.[0] ?? 0,
+            nextBands[2]?.[0] ?? 0,
+          ),
+        },
+        uBandOuter: {
+          value: new Vector3(
+            nextBands[0]?.[1] ?? 0,
+            nextBands[1]?.[1] ?? 0,
+            nextBands[2]?.[1] ?? 0,
+          ),
+        },
+      },
+    }
+  }, [bodyId, ringNormal, sunDirection])
+  if (bands.length === 0) return null
+
+  return (
+    <mesh scale={radius * 1.009} renderOrder={5}>
+      <primitive object={HIGH_DETAIL_SPHERE_GEOMETRY} attach="geometry" />
+      <shaderMaterial
+        vertexShader={RING_SHADOW_VERTEX_SHADER}
+        fragmentShader={RING_SHADOW_FRAGMENT_SHADER}
+        uniforms={uniforms}
+        transparent
+        depthWrite={false}
+      />
+    </mesh>
+  )
+}
+
 function bodyGeometry(id: string, detailed: boolean) {
+  if (id === 'earth' && detailed) {
+    return EARTH_HIGH_DETAIL_SPHERE_GEOMETRY
+  }
   if (usesWestLongitudeTexture(id)) {
     return detailed
       ? WEST_HIGH_DETAIL_SPHERE_GEOMETRY
@@ -345,6 +654,74 @@ function disposeObject(object: Object3D) {
   textures.forEach((texture) => texture.dispose())
 }
 
+function configureDetailedTexture(texture: Texture, colorTexture: boolean) {
+  texture.colorSpace = colorTexture ? SRGBColorSpace : NoColorSpace
+  texture.wrapS = RepeatWrapping
+  texture.minFilter = LinearMipmapLinearFilter
+  texture.generateMipmaps = true
+  texture.anisotropy = 16
+}
+
+function addProceduralSurfaceDetail(
+  material: MeshStandardMaterial,
+  detail: NonNullable<RenderAsset['surfaceDetail']>,
+) {
+  const strength = detail === 'rocky' ? 0.24 : detail === 'cratered' ? 0.16 : 0.11
+  const frequency = detail === 'rocky' ? 34 : detail === 'cratered' ? 24 : 18
+
+  material.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader
+      .replace(
+        '#include <common>',
+        '#include <common>\nvarying vec3 vSurfaceDetailPosition;',
+      )
+      .replace(
+        '#include <begin_vertex>',
+        '#include <begin_vertex>\nvSurfaceDetailPosition = position;',
+      )
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+varying vec3 vSurfaceDetailPosition;
+float surfaceHash(vec3 p) {
+  p = fract(p * 0.1031);
+  p += dot(p, p.yzx + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
+float surfaceNoise(vec3 p) {
+  vec3 cell = floor(p);
+  vec3 blend = fract(p);
+  blend = blend * blend * (3.0 - 2.0 * blend);
+  return mix(
+    mix(
+      mix(surfaceHash(cell), surfaceHash(cell + vec3(1.0, 0.0, 0.0)), blend.x),
+      mix(surfaceHash(cell + vec3(0.0, 1.0, 0.0)), surfaceHash(cell + vec3(1.0, 1.0, 0.0)), blend.x),
+      blend.y
+    ),
+    mix(
+      mix(surfaceHash(cell + vec3(0.0, 0.0, 1.0)), surfaceHash(cell + vec3(1.0, 0.0, 1.0)), blend.x),
+      mix(surfaceHash(cell + vec3(0.0, 1.0, 1.0)), surfaceHash(cell + vec3(1.0, 1.0, 1.0)), blend.x),
+      blend.y
+    ),
+    blend.z
+  );
+}`,
+      )
+      .replace(
+        '#include <map_fragment>',
+        `#include <map_fragment>
+vec3 detailDirection = normalize(vSurfaceDetailPosition);
+float broadDetail = surfaceNoise(detailDirection * ${frequency.toFixed(1)});
+float fineDetail = surfaceNoise(detailDirection * ${(frequency * 3.7).toFixed(1)});
+float surfaceDetail = broadDetail * 0.68 + fineDetail * 0.32;
+diffuseColor.rgb *= mix(${(1 - strength).toFixed(3)}, ${(1 + strength * 0.55).toFixed(3)}, surfaceDetail);`,
+      )
+  }
+  material.customProgramCacheKey = () => `surface-detail-${detail}`
+  material.needsUpdate = true
+}
+
 function DetailedModel({
   asset,
   radius,
@@ -367,13 +744,17 @@ function DetailedModel({
     const detailedTexture = asset.texturePath
       ? new TextureLoader().load(asset.texturePath, () => invalidate())
       : undefined
-    if (detailedTexture) detailedTexture.colorSpace = SRGBColorSpace
+    const bumpTexture = asset.bumpMapPath
+      ? new TextureLoader().load(asset.bumpMapPath, () => invalidate())
+      : undefined
+    if (detailedTexture) configureDetailedTexture(detailedTexture, true)
+    if (bumpTexture) configureDetailedTexture(bumpTexture, false)
 
     const finish = (object: Object3D) => {
       loadedObject = object
-      if (asset.format === 'obj') {
-        object.traverse((child) => {
-          if (!(child instanceof Mesh)) return
+      object.traverse((child) => {
+        if (!(child instanceof Mesh)) return
+        if (asset.format === 'obj') {
           const originalMaterials = Array.isArray(child.material)
             ? child.material
             : [child.material]
@@ -381,14 +762,34 @@ function DetailedModel({
           if (!child.geometry.getAttribute('normal')) {
             child.geometry.computeVertexNormals()
           }
-          child.material = new MeshStandardMaterial({
+          const material = new MeshStandardMaterial({
             color: asset.color ?? color,
             map: detailedTexture,
-            roughness: 0.94,
+            bumpMap: bumpTexture,
+            bumpScale: asset.bumpScale ?? 0.015,
+            roughness: asset.roughness ?? 0.94,
             metalness: 0,
           })
+          if (asset.surfaceDetail) {
+            addProceduralSurfaceDetail(material, asset.surfaceDetail)
+          }
+          child.material = material
+          return
+        }
+
+        const materials = Array.isArray(child.material)
+          ? child.material
+          : [child.material]
+        materials.forEach((material) => {
+          if (!(material instanceof MeshStandardMaterial)) return
+          if (material.map) configureDetailedTexture(material.map, true)
+          material.roughness = asset.roughness ?? Math.max(0.82, material.roughness)
+          material.metalness = 0
+          if (asset.surfaceDetail) {
+            addProceduralSurfaceDetail(material, asset.surfaceDetail)
+          }
         })
-      }
+      })
       if (active) {
         setModel(object)
         invalidate()
@@ -412,7 +813,10 @@ function DetailedModel({
     return () => {
       active = false
       if (loadedObject) disposeObject(loadedObject)
-      else detailedTexture?.dispose()
+      else {
+        detailedTexture?.dispose()
+        bumpTexture?.dispose()
+      }
     }
   }, [asset, color, invalidate])
 
@@ -428,7 +832,6 @@ function DetailedModel({
       scale: largestSemiAxis > 0 ? radius / largestSemiAxis : 1,
     }
   }, [model, radius])
-
   if (!model || !normalization) {
     return (
       <mesh
@@ -722,10 +1125,145 @@ function relativeCloudRotation(
   return ((angle % turn) + turn) % turn
 }
 
+const VENUS_ATMOSPHERE_VERTEX_SHADER = `
+varying vec3 vWorldNormal;
+varying vec3 vWorldPosition;
+
+void main() {
+  vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+  vWorldPosition = worldPosition.xyz;
+  vWorldNormal = normalize(mat3(modelMatrix) * normal);
+  gl_Position = projectionMatrix * viewMatrix * worldPosition;
+}
+`
+
+const ATMOSPHERE_FRAGMENT_SHADER = `
+uniform vec3 uSunDirection;
+uniform vec3 uAtmosphereColor;
+uniform float uStrength;
+uniform float uLimbPower;
+
+varying vec3 vWorldNormal;
+varying vec3 vWorldPosition;
+
+void main() {
+  vec3 normalDirection = normalize(vWorldNormal);
+  vec3 viewDirection = normalize(cameraPosition - vWorldPosition);
+  float viewFacing = max(dot(normalDirection, viewDirection), 0.0);
+  float limb = pow(1.0 - viewFacing, uLimbPower);
+  float daylight = smoothstep(
+    -0.28,
+    0.34,
+    dot(normalDirection, normalize(uSunDirection))
+  );
+  float forwardScattering = pow(
+    max(dot(-viewDirection, normalize(uSunDirection)), 0.0),
+    7.0
+  );
+  float alpha =
+    limb * (0.018 + daylight * uStrength) +
+    limb * forwardScattering * uStrength * 1.1;
+  vec3 color = mix(uAtmosphereColor * 0.72, uAtmosphereColor, daylight);
+  gl_FragColor = vec4(color, alpha);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}
+`
+
+const ATMOSPHERE_PROFILES: Record<
+  string,
+  { color: string; scale: number; strength: number; limbPower: number }
+> = {
+  venus: {
+    color: '#ffe7a3',
+    scale: 1.045,
+    strength: 0.19,
+    limbPower: 2.35,
+  },
+  mars: {
+    color: '#e89a70',
+    scale: 1.026,
+    strength: 0.08,
+    limbPower: 2.7,
+  },
+  jupiter: {
+    color: '#f3dbb4',
+    scale: 1.018,
+    strength: 0.09,
+    limbPower: 2.55,
+  },
+  saturn: {
+    color: '#f6e0ae',
+    scale: 1.02,
+    strength: 0.11,
+    limbPower: 2.5,
+  },
+  uranus: {
+    color: '#bff8fa',
+    scale: 1.03,
+    strength: 0.16,
+    limbPower: 2.4,
+  },
+  neptune: {
+    color: '#8db7ff',
+    scale: 1.032,
+    strength: 0.2,
+    limbPower: 2.35,
+  },
+  titan: {
+    color: '#ffad45',
+    scale: 1.07,
+    strength: 0.24,
+    limbPower: 2.15,
+  },
+}
+
+function AtmosphereShell({
+  bodyId,
+  radius,
+  detailed,
+  sunDirection,
+}: {
+  bodyId: string
+  radius: number
+  detailed: boolean
+  sunDirection: Vec3
+}) {
+  const profile = ATMOSPHERE_PROFILES[bodyId]
+  const uniforms = useMemo(
+    () => ({
+      uSunDirection: { value: new Vector3(...sunDirection) },
+      uAtmosphereColor: { value: new Color(profile.color) },
+      uStrength: { value: profile.strength },
+      uLimbPower: { value: profile.limbPower },
+    }),
+    [profile, sunDirection],
+  )
+  const geometry = detailed
+    ? HIGH_DETAIL_SPHERE_GEOMETRY
+    : LOW_DETAIL_SPHERE_GEOMETRY
+
+  return (
+    <mesh scale={radius * profile.scale} renderOrder={3}>
+      <primitive object={geometry} attach="geometry" />
+      <shaderMaterial
+        vertexShader={VENUS_ATMOSPHERE_VERTEX_SHADER}
+        fragmentShader={ATMOSPHERE_FRAGMENT_SHADER}
+        uniforms={uniforms}
+        transparent
+        blending={AdditiveBlending}
+        depthWrite={false}
+      />
+    </mesh>
+  )
+}
+
 function PlanetMesh({
   definition,
   date,
   position,
+  physicalPositionAu,
+  shadowEvents,
   selected,
   showLabel,
   onSelect,
@@ -733,13 +1271,30 @@ function PlanetMesh({
   definition: PlanetDefinition
   date: Date
   position: Vec3
+  physicalPositionAu: Vec3
+  shadowEvents: EclipseEvent[]
   selected: boolean
   showLabel: boolean
   onSelect: () => void
 }) {
   const invalidate = useThree((state) => state.invalidate)
+  const usesEarthObservation =
+    definition.id === 'earth' &&
+    selected &&
+    isEarthObservationCurrent(date)
   const texture = useMemo(
-    () => createPlanetTexture(definition.id, invalidate),
+    () =>
+      createPlanetTexture(
+        usesEarthObservation ? 'earth-observation' : definition.id,
+        invalidate,
+      ),
+    [definition.id, invalidate, usesEarthObservation],
+  )
+  const earthRoughnessTexture = useMemo(
+    () =>
+      definition.id === 'earth'
+        ? createPlanetTexture('earth-roughness', invalidate)
+        : undefined,
     [definition.id, invalidate],
   )
   const cloudLayer = getCloudLayerDefinition(definition.id)
@@ -773,8 +1328,20 @@ function PlanetMesh({
     () => orientationMatrix(bodyOrientationBasis(definition.id, date)),
     [date, definition.id],
   )
+  const ringNormal = useMemo(
+    () => bodyOrientationBasis(definition.id, date)[1],
+    [date, definition.id],
+  )
+  const sunDirection = useMemo(() => {
+    const direction = physicalPositionAu.map((value) => -value) as Vec3
+    const distance = Math.hypot(...direction)
+    return distance > 0
+      ? (direction.map((value) => value / distance) as Vec3)
+      : ([1, 0, 0] as Vec3)
+  }, [physicalPositionAu])
   const mapped = hasBodyTexture(definition.id)
   const renderAsset = getRenderAsset(definition.id)
+  const atmosphereProfile = ATMOSPHERE_PROFILES[definition.id]
 
   return (
     <group position={position}>
@@ -797,8 +1364,15 @@ function PlanetMesh({
             <meshStandardMaterial
               map={texture}
               color={mapped ? '#ffffff' : definition.color}
-              roughness={definition.id === 'jupiter' ? 0.9 : 0.78}
-              metalness={0.02}
+              roughness={
+                definition.id === 'earth'
+                  ? 0.95
+                  : definition.id === 'jupiter'
+                    ? 0.9
+                    : 0.78
+              }
+              roughnessMap={earthRoughnessTexture}
+              metalness={definition.id === 'earth' ? 0 : 0.02}
               emissive="#000000"
               emissiveIntensity={0}
             />
@@ -822,7 +1396,11 @@ function PlanetMesh({
             />
           </mesh>
         )}
-        {cloudLayer && cloudTexture && !(selected && renderAsset) && (
+        {cloudLayer &&
+          cloudTexture &&
+          !usesEarthObservation &&
+          (!(selected && renderAsset) ||
+            renderAsset.coverage === 'NASA atmospheric composite') && (
           <mesh
             scale={definition.displayRadius * cloudLayer.scale}
             rotation={[0, cloudRotation, 0]}
@@ -839,7 +1417,7 @@ function PlanetMesh({
             <meshStandardMaterial
               map={cloudTexture}
               color={cloudLayer.color}
-              roughness={1}
+              roughness={definition.id === 'venus' ? 0.88 : 1}
               metalness={0}
               transparent={!cloudLayer.opaque}
               opacity={cloudLayer.opacity}
@@ -848,10 +1426,35 @@ function PlanetMesh({
             />
           </mesh>
         )}
+        {atmosphereProfile && (
+          <AtmosphereShell
+            bodyId={definition.id}
+            radius={definition.displayRadius}
+            detailed={selected}
+            sunDirection={sunDirection}
+          />
+        )}
         {definition.hasRings && (
-          <RingSystem radius={definition.displayRadius} bodyId={definition.id} />
+          <RingSystem
+            radius={definition.displayRadius}
+            bodyId={definition.id}
+            bodyCenter={position}
+            sunDirection={sunDirection}
+          />
         )}
       </group>
+      <BodyShadowOverlays
+        radius={definition.displayRadius}
+        events={shadowEvents}
+      />
+      {definition.hasRings && (
+        <RingShadowOverlay
+          radius={definition.displayRadius}
+          bodyId={definition.id}
+          sunDirection={sunDirection}
+          ringNormal={ringNormal}
+        />
+      )}
       {showLabel && (
         <BodyLabel
           name={definition.name}
@@ -1107,9 +1710,11 @@ function SunMesh({
 function TitanAtmosphere({
   radius,
   detailed,
+  sunDirection,
 }: {
   radius: number
   detailed: boolean
+  sunDirection: Vec3
 }) {
   const geometry = detailed
     ? HIGH_DETAIL_SPHERE_GEOMETRY
@@ -1138,6 +1743,12 @@ function TitanAtmosphere({
           depthWrite={false}
         />
       </mesh>
+      <AtmosphereShell
+        bodyId="titan"
+        radius={radius}
+        detailed={detailed}
+        sunDirection={sunDirection}
+      />
     </>
   )
 }
@@ -1147,6 +1758,7 @@ function MoonMesh({
   date,
   position,
   parentPosition,
+  shadowEvents,
   showLabel,
   selected,
   onSelect,
@@ -1155,18 +1767,27 @@ function MoonMesh({
   date: Date
   position: Vec3
   parentPosition: Vec3
+  shadowEvents: EclipseEvent[]
   showLabel: boolean
   selected: boolean
   onSelect: () => void
 }) {
-  const radius = Math.max(0.045, Math.min(0.14, moon.radiusKm / 18_000))
+  const radius = moonDisplayRadius(moon, selected)
+  const isCatalogMoon = !FEATURED_MOON_IDS.has(moon.id)
   const renderAsset = getRenderAsset(moon.id)
   const mapped = hasBodyTexture(moon.id)
+  const relief = getSurfaceReliefDefinition(moon.id)
   const texture = useTransientTexture(
     moon.id,
     mapped && selected && !renderAsset,
   )
-  const geometry = bodyGeometry(moon.id, selected)
+  const reliefTexture = useTransientTexture(
+    relief?.textureId ?? moon.id,
+    Boolean(relief && selected && !renderAsset),
+  )
+  const geometry = isCatalogMoon
+    ? CATALOG_MOON_GEOMETRY
+    : bodyGeometry(moon.id, selected)
   const matrix = useMemo(
     () =>
       orientationMatrix(
@@ -1182,11 +1803,19 @@ function MoonMesh({
     [date, moon.id, moon.parentId, parentPosition, position],
   )
   const bodyScale =
-    moon.id === 'phobos'
+    isCatalogMoon
+      ? catalogMoonScale(moon.id)
+      : moon.id === 'phobos'
       ? ([1.25, 0.92, 0.84] as const)
       : moon.id === 'deimos'
         ? ([1.18, 0.9, 0.86] as const)
         : ([1, 1, 1] as const)
+  const sunDirection = useMemo(() => {
+    const direction = new Vector3(...position).multiplyScalar(-1)
+    return direction.lengthSq() > 0
+      ? (direction.normalize().toArray() as Vec3)
+      : ([1, 0, 0] as Vec3)
+  }, [position])
 
   return (
     <group position={position}>
@@ -1214,18 +1843,26 @@ function MoonMesh({
             <meshStandardMaterial
               key={texture ? `mapped-${moon.id}` : `plain-${moon.id}`}
               map={texture}
+              bumpMap={reliefTexture}
+              bumpScale={relief?.bumpScale ?? 0}
               color={texture ? '#ffffff' : moon.color}
               roughness={0.95}
               metalness={0}
+              flatShading={isCatalogMoon}
               emissive="#000000"
               emissiveIntensity={0}
             />
           </mesh>
         )}
         {moon.id === 'titan' && (
-          <TitanAtmosphere radius={radius} detailed={selected} />
+          <TitanAtmosphere
+            radius={radius}
+            detailed={selected}
+            sunDirection={sunDirection}
+          />
         )}
       </group>
+      <BodyShadowOverlays radius={radius} events={shadowEvents} />
       {showLabel && selected && (
         <Html center position={[0, 0.36, 0]} distanceFactor={12}>
           <button className="space-label moon-label is-selected" onClick={onSelect}>
@@ -1234,6 +1871,85 @@ function MoonMesh({
         </Html>
       )}
     </group>
+  )
+}
+
+function catalogMoonScale(id: string): readonly [number, number, number] {
+  const hash = [...id].reduce(
+    (value, character) => (value * 31 + character.charCodeAt(0)) >>> 0,
+    17,
+  )
+  return [
+    1.02 + ((hash & 0xff) / 255) * 0.18,
+    0.78 + (((hash >>> 8) & 0xff) / 255) * 0.16,
+    0.68 + (((hash >>> 16) & 0xff) / 255) * 0.2,
+  ]
+}
+
+function moonDisplayRadius(moon: MoonDefinition, selected = false) {
+  const minimumRadius = moon.radiusKm === undefined && !selected ? 0.018 : 0.045
+  return Math.max(
+    minimumRadius,
+    Math.min(0.14, (moon.radiusKm ?? 1) / 18_000),
+  )
+}
+
+function CatalogMoonField({
+  moons,
+  positions,
+  onSelect,
+}: {
+  moons: MoonDefinition[]
+  positions: Record<string, Vec3>
+  onSelect: (id: string) => void
+}) {
+  const invalidate = useThree((state) => state.invalidate)
+  const geometry = useMemo(() => {
+    const next = new BufferGeometry()
+    next.setAttribute(
+      'position',
+      new BufferAttribute(new Float32Array(moons.length * 3), 3),
+    )
+    const colors = new Float32Array(moons.length * 3)
+    moons.forEach((moon, index) => {
+      new Color(moon.color).toArray(colors, index * 3)
+    })
+    next.setAttribute('color', new BufferAttribute(colors, 3))
+    return next
+  }, [moons])
+
+  useLayoutEffect(() => {
+    const attribute = geometry.getAttribute('position') as BufferAttribute
+    moons.forEach((moon, index) => {
+      const position = positions[moon.id] ?? [0, 0, 0]
+      attribute.setXYZ(index, position[0], position[1], position[2])
+    })
+    attribute.needsUpdate = true
+    geometry.computeBoundingSphere()
+    invalidate()
+  }, [geometry, invalidate, moons, positions])
+
+  useEffect(() => () => geometry.dispose(), [geometry])
+
+  return (
+    <points
+      geometry={geometry}
+      onClick={(event) => {
+        event.stopPropagation()
+        if (!isSelectionClick(event.delta) || event.index === undefined) return
+        const moon = moons[event.index]
+        if (moon) onSelect(moon.id)
+      }}
+    >
+      <pointsMaterial
+        size={0.035}
+        sizeAttenuation
+        vertexColors
+        transparent
+        opacity={0.82}
+        depthWrite={false}
+      />
+    </points>
   )
 }
 
@@ -1368,46 +2084,6 @@ function OortCloud() {
   )
 }
 
-function StarField() {
-  const geometry = useMemo(() => {
-    const count = 7_000
-    const positions = new Float32Array(count * 3)
-    const colors = new Float32Array(count * 3)
-    const palette = ['#ffffff', '#a9c8ff', '#ffe1af', '#d9e8ff']
-    for (let index = 0; index < count; index += 1) {
-      const u = seededRandom(index * 3 + 101)
-      const v = seededRandom(index * 5 + 223)
-      const radius = 155 + seededRandom(index * 7 + 17) * 55
-      const theta = u * Math.PI * 2
-      const phi = Math.acos(2 * v - 1)
-      positions[index * 3] = radius * Math.sin(phi) * Math.cos(theta)
-      positions[index * 3 + 1] = radius * Math.cos(phi)
-      positions[index * 3 + 2] = radius * Math.sin(phi) * Math.sin(theta)
-      const color = new Color(palette[index % palette.length])
-      colors[index * 3] = color.r
-      colors[index * 3 + 1] = color.g
-      colors[index * 3 + 2] = color.b
-    }
-    const result = new BufferGeometry()
-    result.setAttribute('position', new BufferAttribute(positions, 3))
-    result.setAttribute('color', new BufferAttribute(colors, 3))
-    return result
-  }, [])
-
-  return (
-    <points geometry={geometry}>
-      <pointsMaterial
-        size={0.42}
-        sizeAttenuation
-        vertexColors
-        transparent
-        opacity={0.86}
-        depthWrite={false}
-      />
-    </points>
-  )
-}
-
 function CometTail({
   start,
   end,
@@ -1468,12 +2144,16 @@ function SmallBodies({
   return (
     <>
       {SMALL_BODIES.filter(
-        (body) => body.kind !== 'comet' || showComets,
+        (body) =>
+          (body.kind !== 'comet' && body.kind !== 'interstellar') ||
+          showComets,
       ).map((body) => {
         const position = snapshots[body.id].scenePosition
         const distance = Math.hypot(...position)
-        const tailLength =
-          body.kind === 'comet' ? Math.max(1.4, 7 / Math.max(0.7, distance)) : 0
+        const hasComa = body.kind === 'comet' || body.hasComa
+        const tailLength = hasComa
+          ? Math.max(1.4, 7 / Math.max(0.7, distance))
+          : 0
         const direction =
           distance > 0
             ? (position.map((value) => value / distance) as Vec3)
@@ -1491,7 +2171,7 @@ function SmallBodies({
           : 0
         return (
           <group key={body.id}>
-            {body.kind === 'comet' && (
+            {hasComa && (
               <CometTail start={position} end={tailEnd} color={body.color} />
             )}
             <group position={position}>
@@ -1518,10 +2198,10 @@ function SmallBodies({
                     <primitive object={SMALL_BODY_GEOMETRY} attach="geometry" />
                     <meshStandardMaterial
                       color={body.color}
-                      roughness={body.kind === 'comet' ? 0.72 : 0.95}
+                      roughness={hasComa ? 0.72 : 0.95}
                       metalness={0}
-                      emissive={body.kind === 'comet' ? body.color : '#000000'}
-                      emissiveIntensity={body.kind === 'comet' ? 1.2 : 0}
+                      emissive={hasComa ? body.color : '#000000'}
+                      emissiveIntensity={hasComa ? 1.2 : 0}
                     />
                   </mesh>
                 )}
@@ -1639,18 +2319,23 @@ function CameraDirector({
   target,
   scaleMode,
   closeView,
+  cinematicFocusId,
+  cinematicRadius,
 }: {
   date: Date
   selectedId: string
   target: Vec3
   scaleMode: ScaleMode
   closeView: boolean
+  cinematicFocusId?: string
+  cinematicRadius?: number
 }) {
   const controls = useRef<CameraControls>(null)
   const cameraPosition = useRef(new Vector3())
   const cameraTarget = useRef(new Vector3())
   const lastSelection = useRef('')
   const lastCloseView = useRef(false)
+  const lastCinematicFocus = useRef('')
   const planet = PLANETS.find((body) => body.id === selectedId)
   const smallBody = SMALL_BODIES.find((body) => body.id === selectedId)
   const moon = MOONS.find((body) => body.id === selectedId)
@@ -1661,15 +2346,11 @@ function CameraDirector({
       : planet?.displayRadius ??
         smallBody?.radius ??
         (moon
-          ? Math.max(0.045, Math.min(0.14, moon.radiusKm / 18_000))
+          ? moonDisplayRadius(moon, true)
           : craft
             ? 0.22
             : 0.1)
   const minimumDistance = Math.max(0.04, selectedRadius * 1.035)
-  const earthViewDirection = useMemo(
-    () => earthSurfaceDirection(date, 12, -82),
-    [date],
-  )
   const sunwardViewDirection = useMemo(() => {
     const distanceFromSun = Math.hypot(...target)
     if (distanceFromSun < 0.001) return [0.18, 0.08, 1] as Vec3
@@ -1681,6 +2362,16 @@ function CameraDirector({
     const length = Math.hypot(...direction)
     return direction.map((value) => value / length) as Vec3
   }, [target])
+  const earthViewDirection = useMemo(() => {
+    const direction = new Vector3(...sunwardViewDirection)
+    const north = new Vector3(...bodyOrientationBasis('earth', date)[1])
+    const tangent = new Vector3().crossVectors(north, direction)
+    if (tangent.lengthSq() > 0.001) {
+      direction.addScaledVector(tangent.normalize(), 0.24)
+    }
+    direction.addScaledVector(north, 0.12)
+    return direction.normalize().toArray() as Vec3
+  }, [date, sunwardViewDirection])
   const closeViewDirection = useMemo(() => {
     if (craft?.id !== 'pioneer-10' && craft?.id !== 'pioneer-11') {
       return sunwardViewDirection
@@ -1700,10 +2391,13 @@ function CameraDirector({
 
     if (
       lastSelection.current !== selectedId ||
-      lastCloseView.current !== closeView
+      lastCloseView.current !== closeView ||
+      lastCinematicFocus.current !== (cinematicFocusId ?? '')
     ) {
       const distance =
-        closeView
+        cinematicFocusId
+          ? Math.max(3.8, (cinematicRadius ?? selectedRadius) * 2.7)
+          : closeView
           ? selectedRadius * 3.25
           : selectedId === 'sun'
             ? 12
@@ -1739,6 +2433,7 @@ function CameraDirector({
       )
       lastSelection.current = selectedId
       lastCloseView.current = closeView
+      lastCinematicFocus.current = cinematicFocusId ?? ''
     } else {
       const position = controls.current.getPosition(cameraPosition.current)
       const previousTarget = controls.current.getTarget(cameraTarget.current)
@@ -1759,6 +2454,8 @@ function CameraDirector({
     target,
     closeView,
     closeViewDirection,
+    cinematicFocusId,
+    cinematicRadius,
     earthViewDirection,
     minimumDistance,
     planet,
@@ -1788,14 +2485,21 @@ function SceneContent({
   selectedId,
   closeView,
   sunViewMode,
+  skyObserverId,
+  cinematicFocus,
   onSelect,
 }: SolarSystemSceneProps) {
   const isolateSun = closeView && selectedId === 'sun'
+  const spice = useSpiceEphemeris()
   const horizons = useHorizonsEphemeris()
   const moonHorizons = useMoonHorizonsEphemeris()
+  const spicePlanetPositions = useMemo(
+    () => spice.planetPositionsAu(date),
+    [date, spice],
+  )
   const planets = useMemo(
-    () => getPlanetSnapshots(date, scaleMode),
-    [date, scaleMode],
+    () => getPlanetSnapshots(date, scaleMode, spicePlanetPositions),
+    [date, scaleMode, spicePlanetPositions],
   )
   const smallBodySnapshots = useMemo(() => {
     const snapshots: Record<string, BodySnapshot> = {}
@@ -1820,32 +2524,96 @@ function SceneContent({
     }
     return positions
   }, [date, horizons])
+  const skyObserverPositionAu = useMemo(() => {
+    if (skyObserverId === 'solar-system') return [0, 0, 0] as Vec3
+    if (skyObserverId === 'earth') return planets.earth.positionAu
+    return spacecraftPositions[skyObserverId] ?? ([0, 0, 0] as Vec3)
+  }, [planets.earth.positionAu, skyObserverId, spacecraftPositions])
   const moonParents = useMemo(
     () => ({ ...planets, ...smallBodySnapshots }),
     [planets, smallBodySnapshots],
   )
   const precisionMoonVectors = useMemo(() => {
     const vectors: Record<string, Vec3> = {}
+    const moonVector = spice.moonPositionAu(date)
+    if (moonVector) vectors.moon = moonVector
     for (const moon of MOONS) {
+      if (moon.id === 'moon' && moonVector) continue
       const vector = moonHorizons.positionAu(moon.id, date)
       if (vector) vectors[moon.id] = vector
     }
     return vectors
-  }, [date, moonHorizons])
+  }, [date, moonHorizons, spice])
   const moons = useMemo(
-    () =>
-      getMoonScenePositions(
+    () => {
+      const relativePositions = getMoonRelativePositionsAu(
         date,
-        scaleMode,
-        moonParents,
         precisionMoonVectors,
-      ),
+      )
+      return {
+        relativePositions,
+        scenePositions: getMoonScenePositions(
+          date,
+          scaleMode,
+          moonParents,
+          precisionMoonVectors,
+          relativePositions,
+        ),
+      }
+    },
     [date, moonParents, precisionMoonVectors, scaleMode],
   )
+  const eclipseEvents = useMemo(() => {
+    const bodies: EclipseBody[] = [
+      {
+        id: 'sun',
+        name: SUN.name,
+        radiusKm: SUN.radiusKm,
+        positionAu: [0, 0, 0],
+        kind: 'sun',
+      },
+      ...PLANETS.map((planet) => ({
+        id: planet.id,
+        name: planet.name,
+        radiusKm: planet.radiusKm,
+        positionAu: planets[planet.id].positionAu,
+        kind: 'planet' as const,
+      })),
+    ]
+    for (const moon of FEATURED_MOONS) {
+      if (!moon.radiusKm) continue
+      const parent = planets[moon.parentId]
+      const relative = moons.relativePositions[moon.id]
+      if (!parent || !relative) continue
+      bodies.push({
+        id: moon.id,
+        name: moon.name,
+        radiusKm: moon.radiusKm,
+        positionAu: [
+          parent.positionAu[0] + relative[0],
+          parent.positionAu[1] + relative[1],
+          parent.positionAu[2] + relative[2],
+        ],
+        parentId: moon.parentId,
+        kind: 'moon',
+      })
+    }
+    return computeEclipseEvents(bodies)
+  }, [moons.relativePositions, planets])
+  const shadowsByTarget = useMemo(() => {
+    const grouped = new Map<string, EclipseEvent[]>()
+    for (const event of eclipseEvents) {
+      if (event.type === 'mutual-occultation') continue
+      const events = grouped.get(event.targetId) ?? []
+      events.push(event)
+      grouped.set(event.targetId, events)
+    }
+    return grouped
+  }, [eclipseEvents])
   const selectedPosition = useMemo(() => {
     const planetPosition = planets[selectedId]?.scenePosition
     if (planetPosition) return planetPosition
-    if (moons[selectedId]) return moons[selectedId]
+    if (moons.scenePositions[selectedId]) return moons.scenePositions[selectedId]
     const smallBodyPosition = smallBodySnapshots[selectedId]?.scenePosition
     if (smallBodyPosition) return smallBodyPosition
 
@@ -1854,20 +2622,92 @@ function SceneContent({
       ? mapAuToScene(spacecraftPositions[craft.id], scaleMode)
       : ([0, 0, 0] as Vec3)
   }, [
-    moons,
+    moons.scenePositions,
     planets,
     scaleMode,
     selectedId,
     smallBodySnapshots,
     spacecraftPositions,
   ])
+  const cinematicFrame = useMemo(() => {
+    if (!cinematicFocus) return undefined
+    const positions: Record<string, Vec3 | undefined> = {
+      sun: [0, 0, 0],
+      ...Object.fromEntries(
+        Object.entries(planets).map(([id, snapshot]) => [
+          id,
+          snapshot.scenePosition,
+        ]),
+      ),
+      ...moons.scenePositions,
+      ...Object.fromEntries(
+        Object.entries(smallBodySnapshots).map(([id, snapshot]) => [
+          id,
+          snapshot.scenePosition,
+        ]),
+      ),
+      ...Object.fromEntries(
+        Object.entries(spacecraftPositions).map(([id, position]) => [
+          id,
+          mapAuToScene(position, scaleMode),
+        ]),
+      ),
+    }
+    const targets = cinematicFocus.targetIds
+      .map((id) => positions[id])
+      .filter((position): position is Vec3 => Boolean(position))
+    if (targets.length === 0) return undefined
+    const center = targets
+      .reduce(
+        (sum, position) => [
+          sum[0] + position[0],
+          sum[1] + position[1],
+          sum[2] + position[2],
+        ] as Vec3,
+        [0, 0, 0] as Vec3,
+      )
+      .map((value) => value / targets.length) as Vec3
+    const radius = Math.max(
+      0.8,
+      ...targets.map((position) =>
+        Math.hypot(
+          position[0] - center[0],
+          position[1] - center[1],
+          position[2] - center[2],
+        ),
+      ),
+    )
+    return { center, radius }
+  }, [
+    cinematicFocus,
+    moons.scenePositions,
+    planets,
+    scaleMode,
+    smallBodySnapshots,
+    spacecraftPositions,
+  ])
+  const cinematicTargetIds = useMemo(
+    () => new Set(cinematicFocus?.targetIds ?? []),
+    [cinematicFocus],
+  )
+  const selectedMoon = MOONS.find((moon) => moon.id === selectedId)
+  const selectedCatalogMoon =
+    selectedMoon && !FEATURED_MOON_IDS.has(selectedMoon.id)
+      ? selectedMoon
+      : undefined
 
   return (
     <>
       <color attach="background" args={['#01030a']} />
       <fog attach="fog" args={['#02050d', 90, 235]} />
       <ambientLight intensity={0.014} color="#42608e" />
-      <StarField />
+      <GaiaSky
+        date={date}
+        observerPositionAu={skyObserverPositionAu}
+        showStars={layers.stars}
+        showMilkyWay={layers.milkyWay}
+        showConstellations={layers.constellations}
+      />
       {layers.oortCloud && !isolateSun && <OortCloud />}
       {layers.orbits && !isolateSun && <PlanetOrbits scaleMode={scaleMode} />}
       {layers.asteroidBelt && !isolateSun && (
@@ -1890,29 +2730,58 @@ function SceneContent({
             definition={planet}
             date={date}
             position={planets[planet.id].scenePosition}
+            physicalPositionAu={planets[planet.id].positionAu}
+            shadowEvents={shadowsByTarget.get(planet.id) ?? []}
             selected={selectedId === planet.id}
             showLabel={layers.labels && (!closeView || selectedId === planet.id)}
             onSelect={() => onSelect(planet.id)}
           />
         ))}
+      {layers.moons && !isolateSun && !closeView && (
+        <CatalogMoonField
+          moons={CATALOG_MOONS}
+          positions={moons.scenePositions}
+          onSelect={onSelect}
+        />
+      )}
       {layers.moons &&
         !isolateSun &&
-        MOONS.filter((moon) => !closeView || moon.id === selectedId).map(
+        FEATURED_MOONS.filter(
+          (moon) =>
+            !closeView ||
+            moon.id === selectedId ||
+            cinematicTargetIds.has(moon.id),
+        ).map(
           (moon) => (
             <MoonMesh
               key={moon.id}
               moon={moon}
               date={date}
-              position={moons[moon.id]}
+              position={moons.scenePositions[moon.id]}
               parentPosition={moonParents[moon.parentId].scenePosition}
+              shadowEvents={shadowsByTarget.get(moon.id) ?? []}
               selected={selectedId === moon.id}
               showLabel={
-                layers.labels && (!closeView || selectedId === moon.id)
+                (moon.showLabel !== false || selectedId === moon.id) &&
+                layers.labels &&
+                (!closeView || selectedId === moon.id)
               }
               onSelect={() => onSelect(moon.id)}
             />
           ),
         )}
+      {layers.moons && !isolateSun && selectedCatalogMoon && (
+        <MoonMesh
+          moon={selectedCatalogMoon}
+          date={date}
+          position={moons.scenePositions[selectedCatalogMoon.id]}
+          parentPosition={moonParents[selectedCatalogMoon.parentId].scenePosition}
+          shadowEvents={[]}
+          selected
+          showLabel={layers.labels}
+          onSelect={() => onSelect(selectedCatalogMoon.id)}
+        />
+      )}
       {!isolateSun && (
         <SmallBodies
           date={date}
@@ -1936,9 +2805,11 @@ function SceneContent({
       <CameraDirector
         date={date}
         selectedId={selectedId}
-        target={selectedPosition}
+        target={cinematicFrame?.center ?? selectedPosition}
         scaleMode={scaleMode}
         closeView={closeView}
+        cinematicFocusId={cinematicFocus?.id}
+        cinematicRadius={cinematicFrame?.radius}
       />
       <RuntimeDiagnostics />
     </>
@@ -1948,7 +2819,7 @@ function SceneContent({
 export function SolarSystemScene(props: SolarSystemSceneProps) {
   return (
     <Canvas
-      dpr={[1, 1.35]}
+      dpr={[1, 1.75]}
       frameloop="demand"
       camera={{ position: [13, 9, 24], fov: 48, near: 0.001, far: 500 }}
       gl={{ antialias: true, powerPreference: 'high-performance' }}
