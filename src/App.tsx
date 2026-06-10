@@ -9,8 +9,10 @@ import {
 import {
   Atom,
   CalendarClock,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   CirclePause,
   CirclePlay,
   Crosshair,
@@ -83,6 +85,11 @@ import {
   findUpcomingCelestialEvents,
   type CelestialEventGuide,
 } from './lib/celestialEvents'
+import {
+  CONSTELLATIONS,
+  getConstellation,
+  searchConstellations,
+} from './lib/constellations'
 import type {
   CinematicFocus,
   LayerSettings,
@@ -885,7 +892,11 @@ const LayerPanel = memo(function LayerPanel({
   const layerRows: { id: keyof LayerSettings; label: string; icon: React.ReactNode }[] = [
     { id: 'stars', label: 'Gaia DR3 stars', icon: <Sparkles size={15} /> },
     { id: 'milkyWay', label: 'Gaia Milky Way', icon: <Sparkles size={15} /> },
-    { id: 'constellations', label: 'IAU boundaries', icon: <Crosshair size={15} /> },
+    {
+      id: 'constellations',
+      label: 'All constellation figures',
+      icon: <Crosshair size={15} />,
+    },
     { id: 'labels', label: 'Names & labels', icon: <Eye size={15} /> },
     { id: 'orbits', label: 'Orbit paths', icon: <Orbit size={15} /> },
     { id: 'moons', label: `Moons (${MOONS.length})`, icon: <Atom size={15} /> },
@@ -969,6 +980,120 @@ const LayerPanel = memo(function LayerPanel({
           NASA/JPL Horizons vectors within their stated ranges. The remaining
           catalog moons use JPL mean elements for general orbit shape.
         </p>
+      </div>
+    </aside>
+  )
+})
+
+const ConstellationFinder = memo(function ConstellationFinder({
+  open,
+  selectedIds,
+  emphasizedId,
+  onSelect,
+  onFocus,
+  onSelectAll,
+  onClear,
+  onClose,
+}: {
+  open: boolean
+  selectedIds: string[]
+  emphasizedId?: string
+  onSelect: (id: string) => void
+  onFocus: (id: string) => void
+  onSelectAll: () => void
+  onClear: () => void
+  onClose: () => void
+}) {
+  const [query, setQuery] = useState('')
+  const results = useMemo(() => searchConstellations(query), [query])
+  const selected = useMemo(() => new Set(selectedIds), [selectedIds])
+  const allSelected = selectedIds.length === CONSTELLATIONS.length
+
+  if (!open) return null
+
+  return (
+    <aside className="constellation-finder glass-panel">
+      <div className="panel-heading">
+        <div>
+          <span className="eyebrow">CELESTIAL NAVIGATION</span>
+          <h3>
+            <LocateFixed size={17} /> Constellation finder
+          </h3>
+        </div>
+        <button
+          className="constellation-finder-close"
+          onClick={onClose}
+          aria-label="Close constellation finder"
+        >
+          <X size={15} />
+        </button>
+      </div>
+      <p className="constellation-finder-intro">
+        Select any number of constellations. Click a selected figure again
+        to turn your current view toward it.
+      </p>
+      <div className="constellation-selection-summary">
+        <span>{selectedIds.length} SELECTED</span>
+        <div>
+          <button
+            onClick={onSelectAll}
+            disabled={allSelected}
+          >
+            {allSelected ? 'ALL SELECTED' : 'SELECT ALL'}
+          </button>
+          {selectedIds.length > 0 && (
+            <button onClick={onClear}>CLEAR ALL</button>
+          )}
+        </div>
+      </div>
+      <label className="constellation-search">
+        <Search size={14} />
+        <input
+          autoFocus
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="SEARCH BY NAME OR ABBREVIATION"
+        />
+        {query && (
+          <button
+            type="button"
+            onClick={() => setQuery('')}
+            aria-label="Clear constellation search"
+          >
+            <X size={12} />
+          </button>
+        )}
+      </label>
+      <div className="constellation-results">
+        {results.map((constellation) => (
+          <button
+            className={[
+              selected.has(constellation.id) ? 'active' : '',
+              emphasizedId === constellation.id ? 'is-emphasized' : '',
+            ].join(' ')}
+            key={constellation.id}
+            onClick={() =>
+              selected.has(constellation.id)
+                ? onFocus(constellation.id)
+                : onSelect(constellation.id)
+            }
+            aria-pressed={selected.has(constellation.id)}
+            aria-label={
+              selected.has(constellation.id)
+                ? `Show ${constellation.name} in current view`
+                : `Select ${constellation.name}`
+            }
+          >
+            <span>{constellation.id}</span>
+            <strong>{constellation.name}</strong>
+            {selected.has(constellation.id) ? (
+              <LocateFixed size={14} />
+            ) : (
+              <span className="constellation-add">+</span>
+            )}
+          </button>
+        ))}
+        {results.length === 0 && <span>No constellation found.</span>}
       </div>
     </aside>
   )
@@ -1479,6 +1604,16 @@ function App() {
   const [skyObserverId, setSkyObserverId] =
     useState<SkyObserverId>('earth')
   const [eventsOpen, setEventsOpen] = useState(false)
+  const [constellationFinderOpen, setConstellationFinderOpen] =
+    useState(false)
+  const [selectedConstellationIds, setSelectedConstellationIds] =
+    useState<string[]>([])
+  const [emphasizedConstellationId, setEmphasizedConstellationId] =
+    useState<string>()
+  const [constellationTrayExpanded, setConstellationTrayExpanded] =
+    useState(false)
+  const [constellationFocusRequest, setConstellationFocusRequest] =
+    useState<{ id: string; sequence: number }>()
   const [activeEvent, setActiveEvent] =
     useState<CelestialEventGuide | null>(null)
   const [eventSearchDate, setEventSearchDate] = useState(() => clock.date)
@@ -1542,8 +1677,45 @@ function App() {
     )
     setInspectorOpen(true)
     setLayersOpen(false)
+    setConstellationFinderOpen(false)
   }, [selectedId])
   const closeLayers = useCallback(() => setLayersOpen(false), [])
+  const selectConstellation = useCallback((id: string) => {
+    setSelectedConstellationIds((current) =>
+      current.includes(id) ? current : [...current, id],
+    )
+    setEmphasizedConstellationId(id)
+    setLayers((current) => ({ ...current, stars: true }))
+  }, [])
+  const removeConstellation = useCallback((id: string) => {
+    setSelectedConstellationIds((current) =>
+      current.filter((selectedId) => selectedId !== id),
+    )
+    setEmphasizedConstellationId((current) =>
+      current === id ? undefined : current,
+    )
+  }, [])
+  const focusConstellation = useCallback((id: string) => {
+    setEmphasizedConstellationId(id)
+    setConstellationFocusRequest((current) => ({
+      id,
+      sequence: (current?.sequence ?? 0) + 1,
+    }))
+    setConstellationFinderOpen(false)
+    setConstellationTrayExpanded(false)
+  }, [])
+  const selectAllConstellations = useCallback(() => {
+    setSelectedConstellationIds(
+      CONSTELLATIONS.map((constellation) => constellation.id),
+    )
+    setConstellationTrayExpanded(false)
+    setLayers((current) => ({ ...current, stars: true }))
+  }, [])
+  const clearConstellations = useCallback(() => {
+    setSelectedConstellationIds([])
+    setEmphasizedConstellationId(undefined)
+    setConstellationTrayExpanded(false)
+  }, [])
   const activateEvent = useCallback(
     (event: CelestialEventGuide) => {
       clock.chooseDate(event.date)
@@ -1565,6 +1737,13 @@ function App() {
         : undefined,
     [activeEvent],
   )
+  const selectedConstellations = useMemo(
+    () =>
+      selectedConstellationIds
+        .map((id) => getConstellation(id))
+        .filter((constellation) => constellation !== undefined),
+    [selectedConstellationIds],
+  )
 
   return (
     <main className="app-shell">
@@ -1577,6 +1756,9 @@ function App() {
           closeView={closeView}
           sunViewMode={sunViewMode}
           skyObserverId={skyObserverId}
+          selectedConstellationIds={selectedConstellationIds}
+          emphasizedConstellationId={emphasizedConstellationId}
+          constellationFocusRequest={constellationFocusRequest}
           cinematicFocus={cinematicFocus}
           onSelect={selectBody}
         />
@@ -1616,6 +1798,7 @@ function App() {
               if (nextOpen) setEventSearchDate(clock.date)
               setEventsOpen(nextOpen)
               setLayersOpen(false)
+              setConstellationFinderOpen(false)
             }}
             aria-label="Open celestial event director"
           >
@@ -1623,11 +1806,32 @@ function App() {
             <span>EVENTS</span>
           </button>
           <button
+            className={`constellations-toggle ${
+              constellationFinderOpen || selectedConstellationIds.length > 0
+                ? 'active'
+                : ''
+            }`}
+            onClick={() => {
+              const nextOpen = !constellationFinderOpen
+              setConstellationFinderOpen(nextOpen)
+              setEventsOpen(false)
+              setLayersOpen(false)
+            }}
+            aria-label="Open constellation finder"
+          >
+            <LocateFixed size={18} />
+            <span>CONSTELLATIONS</span>
+            {selectedConstellationIds.length > 0 && (
+              <b>{selectedConstellationIds.length}</b>
+            )}
+          </button>
+          <button
             className="layers-toggle"
             onClick={() => {
               const nextOpen = !layersOpen
               setLayersOpen(nextOpen)
               setEventsOpen(false)
+              setConstellationFinderOpen(false)
               if (nextOpen) setInspectorOpen(false)
             }}
             aria-label="Open display layers"
@@ -1667,6 +1871,93 @@ function App() {
         onClose={() => setEventsOpen(false)}
         onActivate={activateEvent}
       />
+
+      <ConstellationFinder
+        open={constellationFinderOpen}
+        selectedIds={selectedConstellationIds}
+        emphasizedId={emphasizedConstellationId}
+        onSelect={selectConstellation}
+        onFocus={focusConstellation}
+        onSelectAll={selectAllConstellations}
+        onClear={clearConstellations}
+        onClose={() => setConstellationFinderOpen(false)}
+      />
+
+      {selectedConstellations.length > 0 && !constellationFinderOpen && (
+        <div
+          className={`constellation-selection-tray glass-panel ${
+            constellationTrayExpanded ? 'is-expanded' : ''
+          }`}
+        >
+          <div className="constellation-tray-toolbar">
+            <LocateFixed size={15} />
+            <strong>{selectedConstellations.length} SELECTED</strong>
+            {emphasizedConstellationId && (
+              <span className="constellation-emphasis-status">
+                EMPHASIZED ·{' '}
+                {getConstellation(emphasizedConstellationId)?.name}
+              </span>
+            )}
+            {selectedConstellations.length > 1 && (
+              <button
+                className="constellation-tray-expand"
+                onClick={() =>
+                  setConstellationTrayExpanded((current) => !current)
+                }
+                aria-expanded={constellationTrayExpanded}
+              >
+                {constellationTrayExpanded ? (
+                  <ChevronUp size={12} />
+                ) : (
+                  <ChevronDown size={12} />
+                )}
+                {constellationTrayExpanded ? 'COLLAPSE' : 'BROWSE SELECTED'}
+              </button>
+            )}
+            <button
+              className="constellation-selection-clear"
+              onClick={clearConstellations}
+              aria-label="Clear all constellation highlights"
+            >
+              CLEAR
+            </button>
+          </div>
+          <div
+            className="constellation-selection-chips"
+            role="list"
+            aria-label="Selected constellations"
+          >
+            {selectedConstellations.map((constellation) => (
+              <div
+                className={`constellation-selection-chip ${
+                  constellation.id === emphasizedConstellationId
+                    ? 'is-emphasized'
+                    : ''
+                }`}
+                key={constellation.id}
+                role="listitem"
+              >
+                <button
+                  className="constellation-chip-focus"
+                  onClick={() => focusConstellation(constellation.id)}
+                  aria-label={`Show ${constellation.name} in current view`}
+                >
+                  <span>{constellation.id}</span>
+                  {constellation.name}
+                  <LocateFixed size={11} />
+                </button>
+                <button
+                  className="constellation-chip-remove"
+                  onClick={() => removeConstellation(constellation.id)}
+                  aria-label={`Hide ${constellation.name}`}
+                >
+                  <X size={10} />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <ObjectNavigator
         category={objectCategory}

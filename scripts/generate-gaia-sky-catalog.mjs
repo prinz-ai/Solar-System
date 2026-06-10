@@ -162,7 +162,6 @@ async function main() {
   const densityRows = parseCsv(await runTapQuery(densityQuery))
   console.log('Downloading official IAU constellation boundaries...')
   const constellations = await generateConstellationBoundaries()
-
   const sourceIds = new Set()
   const brightStars = []
   for (const row of brightRows) {
@@ -247,14 +246,21 @@ ${densityStars.length.toLocaleString('en-US')} sources used to show the
 large-scale Milky Way density. Exact ADQL queries and the binary record layout
 are stored in \`gaia-dr3-stars.json\`.
 
-Constellation overlays use the official IAU J2000 boundary text files linked
-from:
+The constellation finder uses the Western Sky & Telescope figure set from
+Stellarium Sky Cultures. Generate that separate catalog with:
+
+\`\`\`bash
+npm run generate:constellations
+\`\`\`
+
+The official IAU J2000 boundary text files are also retained from:
 ${IAU_CONSTELLATIONS_URL}
 
 Regenerate all assets from the repository root with:
 
 \`\`\`bash
 npm run generate:sky
+npm run generate:constellations
 \`\`\`
 `,
   )

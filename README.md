@@ -35,7 +35,7 @@ dwarf planets, comets, asteroids, and interstellar probes.
   G-band brightness, proper motion, observer parallax, and a Gaia-density
   Milky Way layer
 - Earth, solar-system barycenter, Voyager, Pioneer, and New Horizons sky
-  observer modes with optional official IAU constellation boundaries
+  observer modes with persistent multi-select Western constellation figures
 - Dated NASA VIIRS true-color Earth observations with real cloud cover near
   the acquisition date
 - Searchable object navigator for planets, moons, dwarf planets, comets,
@@ -127,6 +127,7 @@ Refresh the generated Gaia and IAU sky assets with:
 
 ```bash
 npm run generate:sky
+npm run generate:constellations
 ```
 
 Horizons source and API documentation:

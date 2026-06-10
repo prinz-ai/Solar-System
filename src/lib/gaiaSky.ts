@@ -25,24 +25,39 @@ export interface GaiaSkyMetadata {
   }
 }
 
-export interface ConstellationBoundary {
+export interface ConstellationLineFeature {
   id: string
-  part: string
-  points: [number, number][]
+  paths: ConstellationFigurePath[]
 }
 
-export interface ConstellationBoundaryData {
+export type ConstellationPathStyle = 'bold' | 'normal' | 'thin'
+
+export interface ConstellationFigureStar {
+  hip: number
+  raDeg: number
+  decDeg: number
+  magnitude: number
+  bv: number
+}
+
+export interface ConstellationFigurePath {
+  style: ConstellationPathStyle
+  stars: ConstellationFigureStar[]
+}
+
+export interface ConstellationFigureData {
   frame: string
+  culture: string
   source: string
-  constellationCount: number
-  boundaryCount: number
-  boundaries: ConstellationBoundary[]
+  license: string
+  starSource: string
+  constellations: ConstellationLineFeature[]
 }
 
 export interface GaiaSkyData {
   metadata: GaiaSkyMetadata
   records: Float32Array
-  constellations: ConstellationBoundaryData
+  constellationFigures: ConstellationFigureData
 }
 
 const COLOR_STOPS = [
@@ -134,16 +149,16 @@ export function apparentGaiaDirection(
 let skyDataPromise: Promise<GaiaSkyData> | undefined
 
 async function fetchGaiaSkyData(): Promise<GaiaSkyData> {
-  const [metadataResponse, recordsResponse, constellationsResponse] =
+  const [metadataResponse, recordsResponse, constellationFiguresResponse] =
     await Promise.all([
       fetch('/sky/gaia-dr3-stars.json'),
       fetch('/sky/gaia-dr3-stars.bin'),
-      fetch('/sky/constellation-boundaries.json'),
+      fetch('/sky/constellation-figures.json'),
     ])
   for (const response of [
     metadataResponse,
     recordsResponse,
-    constellationsResponse,
+    constellationFiguresResponse,
   ]) {
     if (!response.ok) {
       throw new Error(
@@ -152,10 +167,10 @@ async function fetchGaiaSkyData(): Promise<GaiaSkyData> {
     }
   }
 
-  const [metadata, buffer, constellations] = await Promise.all([
+  const [metadata, buffer, constellationFigures] = await Promise.all([
     metadataResponse.json() as Promise<GaiaSkyMetadata>,
     recordsResponse.arrayBuffer(),
-    constellationsResponse.json() as Promise<ConstellationBoundaryData>,
+    constellationFiguresResponse.json() as Promise<ConstellationFigureData>,
   ])
   if (metadata.recordFloats !== GAIA_RECORD_FLOATS) {
     throw new Error(
@@ -167,7 +182,7 @@ async function fetchGaiaSkyData(): Promise<GaiaSkyData> {
     throw new Error('Gaia binary length does not match its metadata')
   }
 
-  return { metadata, records, constellations }
+  return { metadata, records, constellationFigures }
 }
 
 export function loadGaiaSkyData(): Promise<GaiaSkyData> {

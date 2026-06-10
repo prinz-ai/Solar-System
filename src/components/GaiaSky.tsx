@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import { useThree } from '@react-three/fiber'
+import { Line } from '@react-three/drei'
 import {
   AdditiveBlending,
   BufferAttribute,
@@ -14,8 +15,12 @@ import {
   GAIA_SKY_RADIUS,
   loadGaiaSkyData,
   yearsSinceGaiaEpoch,
+  type ConstellationFigureData,
+  type ConstellationFigureStar,
+  type ConstellationPathStyle,
   type GaiaSkyData,
 } from '../lib/gaiaSky'
+import { getConstellationFigures } from '../lib/constellations'
 import type { Vec3 } from '../types'
 
 interface GaiaSkyProps {
@@ -24,6 +29,14 @@ interface GaiaSkyProps {
   showStars: boolean
   showMilkyWay: boolean
   showConstellations: boolean
+  selectedConstellationIds: string[]
+  emphasizedConstellationId?: string
+}
+
+interface SelectedFigurePath {
+  id: string
+  style: ConstellationPathStyle
+  points: Vec3[]
 }
 
 const vertexShader = `
@@ -91,6 +104,42 @@ void main() {
   float core = pow(max(0.0, 1.0 - distanceFromCenter), 1.6);
   float halo = pow(max(0.0, 1.0 - distanceFromCenter), 0.42);
   gl_FragColor = vec4(vColor, vAlpha * (core * 0.82 + halo * 0.18));
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}
+`
+
+const figureStarVertexShader = `
+attribute float aSize;
+attribute float aAlpha;
+
+varying vec3 vColor;
+varying float vAlpha;
+
+void main() {
+  vec4 modelViewPosition = modelViewMatrix * vec4(position, 1.0);
+  gl_Position = projectionMatrix * modelViewPosition;
+  gl_PointSize = clamp(
+    aSize * 275.0 / max(32.0, -modelViewPosition.z),
+    2.4,
+    20.0
+  );
+  vColor = color;
+  vAlpha = aAlpha;
+}
+`
+
+const figureStarFragmentShader = `
+varying vec3 vColor;
+varying float vAlpha;
+
+void main() {
+  float distanceFromCenter = length(gl_PointCoord - vec2(0.5)) * 2.0;
+  if (distanceFromCenter > 1.0) discard;
+  float core = pow(max(0.0, 1.0 - distanceFromCenter), 5.4);
+  float halo = pow(max(0.0, 1.0 - distanceFromCenter), 0.85);
+  vec3 color = mix(vColor, vec3(1.0), core * 0.82);
+  gl_FragColor = vec4(color, vAlpha * (halo * 0.38 + core));
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }
@@ -165,21 +214,30 @@ function createSkyMaterial(opacity: number) {
   })
 }
 
-function createConstellationGeometry(data: GaiaSkyData) {
+function constellationDirection(star: ConstellationFigureStar) {
+  return equatorialSkyDirection(
+    (star.raDeg * Math.PI) / 180,
+    (star.decDeg * Math.PI) / 180,
+  )
+}
+
+function createConstellationGeometry(data: ConstellationFigureData) {
   const values: number[] = []
-  for (const boundary of data.constellations.boundaries) {
-    for (let index = 0; index < boundary.points.length; index += 1) {
-      const nextIndex = (index + 1) % boundary.points.length
-      const start = equatorialSkyDirection(...boundary.points[index])
-      const end = equatorialSkyDirection(...boundary.points[nextIndex])
-      values.push(
-        start[0] * (GAIA_SKY_RADIUS - 1),
-        start[1] * (GAIA_SKY_RADIUS - 1),
-        start[2] * (GAIA_SKY_RADIUS - 1),
-        end[0] * (GAIA_SKY_RADIUS - 1),
-        end[1] * (GAIA_SKY_RADIUS - 1),
-        end[2] * (GAIA_SKY_RADIUS - 1),
-      )
+  const radius = GAIA_SKY_RADIUS - 0.8
+  for (const figure of data.constellations) {
+    for (const path of figure.paths) {
+      for (let index = 0; index < path.stars.length - 1; index += 1) {
+        const start = constellationDirection(path.stars[index])
+        const end = constellationDirection(path.stars[index + 1])
+        values.push(
+          start[0] * radius,
+          start[1] * radius,
+          start[2] * radius,
+          end[0] * radius,
+          end[1] * radius,
+          end[2] * radius,
+        )
+      }
     }
   }
   const geometry = new BufferGeometry()
@@ -191,12 +249,211 @@ function createConstellationGeometry(data: GaiaSkyData) {
   return geometry
 }
 
+function interpolateSkyArc(start: Vec3, end: Vec3, subdivisions: number) {
+  const dot = Math.max(
+    -1,
+    Math.min(
+      1,
+      start[0] * end[0] + start[1] * end[1] + start[2] * end[2],
+    ),
+  )
+  const angle = Math.acos(dot)
+  if (angle < 0.0001) return [start]
+  const sine = Math.sin(angle)
+  return Array.from({ length: subdivisions }, (_, index) => {
+    const amount = index / subdivisions
+    const startWeight = Math.sin((1 - amount) * angle) / sine
+    const endWeight = Math.sin(amount * angle) / sine
+    return [
+      start[0] * startWeight + end[0] * endWeight,
+      start[1] * startWeight + end[1] * endWeight,
+      start[2] * startWeight + end[2] * endWeight,
+    ] as Vec3
+  })
+}
+
+function createSelectedFigurePaths(
+  data: ConstellationFigureData,
+  ids: string[],
+): SelectedFigurePath[] {
+  const radius = GAIA_SKY_RADIUS - 0.22
+  return getConstellationFigures(data, ids).flatMap((figure) =>
+    figure.paths.map((path) => {
+      const directions = path.stars.map(constellationDirection)
+      const curved: Vec3[] = []
+      for (let index = 0; index < directions.length - 1; index += 1) {
+        const dot =
+          directions[index][0] * directions[index + 1][0] +
+          directions[index][1] * directions[index + 1][1] +
+          directions[index][2] * directions[index + 1][2]
+        const angle = Math.acos(Math.max(-1, Math.min(1, dot)))
+        const subdivisions = Math.max(3, Math.ceil(angle / 0.018))
+        curved.push(
+          ...interpolateSkyArc(
+            directions[index],
+            directions[index + 1],
+            subdivisions,
+          ),
+        )
+      }
+      curved.push(directions[directions.length - 1])
+      return {
+        id: figure.id,
+        style: path.style,
+        points: curved.map(
+          (direction) =>
+            direction.map((value) => value * radius) as Vec3,
+        ),
+      }
+    }),
+  )
+}
+
+function createSelectedFigureStarGeometry(
+  data: ConstellationFigureData,
+  ids: string[],
+  emphasized = false,
+) {
+  const stars = new Map<
+    number,
+    {
+      star: ConstellationFigureStar
+      links: number
+      boldUses: number
+    }
+  >()
+
+  for (const figure of getConstellationFigures(data, ids)) {
+    for (const path of figure.paths) {
+      path.stars.forEach((star, index) => {
+        const existing = stars.get(star.hip)
+        const links =
+          (index > 0 ? 1 : 0) + (index < path.stars.length - 1 ? 1 : 0)
+        if (existing) {
+          existing.links += links
+          if (path.style === 'bold') existing.boldUses += 1
+        } else {
+          stars.set(star.hip, {
+            star,
+            links,
+            boldUses: path.style === 'bold' ? 1 : 0,
+          })
+        }
+      })
+    }
+  }
+
+  const positions = new Float32Array(stars.size * 3)
+  const colors = new Float32Array(stars.size * 3)
+  const sizes = new Float32Array(stars.size)
+  const alphas = new Float32Array(stars.size)
+  const radius = GAIA_SKY_RADIUS - 0.08
+
+  ;[...stars.values()].forEach(({ star, links, boldUses }, index) => {
+    const direction = constellationDirection(star)
+    const color = gaiaColorFromBpRp(star.bv)
+    const brightness = Math.max(
+      0.12,
+      Math.min(1, (6.3 - star.magnitude) / 6.3),
+    )
+    const keyStar =
+      star.magnitude <= 3.25 || boldUses > 0 || links >= 4
+    positions[index * 3] = direction[0] * radius
+    positions[index * 3 + 1] = direction[1] * radius
+    positions[index * 3 + 2] = direction[2] * radius
+    colors[index * 3] = color[0]
+    colors[index * 3 + 1] = color[1]
+    colors[index * 3 + 2] = color[2]
+    sizes[index] = keyStar
+      ? (9.5 + brightness * 11.5) * (emphasized ? 1.32 : 1)
+      : (3 + brightness * 3.2) * (emphasized ? 1.22 : 1)
+    alphas[index] = keyStar
+      ? Math.min(1, (0.7 + brightness * 0.3) * (emphasized ? 1.12 : 1))
+      : Math.min(
+          0.72,
+          (0.18 + brightness * 0.24) * (emphasized ? 1.55 : 1),
+        )
+  })
+
+  const geometry = new BufferGeometry()
+  geometry.setAttribute('position', new BufferAttribute(positions, 3))
+  geometry.setAttribute('color', new BufferAttribute(colors, 3))
+  geometry.setAttribute('aSize', new BufferAttribute(sizes, 1))
+  geometry.setAttribute('aAlpha', new BufferAttribute(alphas, 1))
+  geometry.computeBoundingSphere()
+  return geometry
+}
+
+function createFigureStarMaterial() {
+  return new ShaderMaterial({
+    vertexShader: figureStarVertexShader,
+    fragmentShader: figureStarFragmentShader,
+    vertexColors: true,
+    transparent: true,
+    depthTest: true,
+    depthWrite: false,
+    blending: AdditiveBlending,
+  })
+}
+
+const FIGURE_LINE_STYLE = {
+  bold: {
+    haloWidth: 2,
+    haloOpacity: 0.04,
+    coreWidth: 0.76,
+    coreOpacity: 0.34,
+  },
+  normal: {
+    haloWidth: 1.65,
+    haloOpacity: 0.03,
+    coreWidth: 0.58,
+    coreOpacity: 0.24,
+  },
+  thin: {
+    haloWidth: 1.25,
+    haloOpacity: 0.018,
+    coreWidth: 0.44,
+    coreOpacity: 0.14,
+  },
+} satisfies Record<
+  ConstellationPathStyle,
+  {
+    haloWidth: number
+    haloOpacity: number
+    coreWidth: number
+    coreOpacity: number
+  }
+>
+
+const EMPHASIZED_LINE_STYLE = {
+  bold: {
+    haloWidth: 5,
+    haloOpacity: 0.12,
+    coreWidth: 1.35,
+    coreOpacity: 0.94,
+  },
+  normal: {
+    haloWidth: 4.2,
+    haloOpacity: 0.1,
+    coreWidth: 1.12,
+    coreOpacity: 0.82,
+  },
+  thin: {
+    haloWidth: 3.4,
+    haloOpacity: 0.075,
+    coreWidth: 0.92,
+    coreOpacity: 0.62,
+  },
+} satisfies typeof FIGURE_LINE_STYLE
+
 export function GaiaSky({
   date,
   observerPositionAu,
   showStars,
   showMilkyWay,
   showConstellations,
+  selectedConstellationIds,
+  emphasizedConstellationId,
 }: GaiaSkyProps) {
   const invalidate = useThree((state) => state.invalidate)
   const [data, setData] = useState<GaiaSkyData | null>(null)
@@ -235,11 +492,63 @@ export function GaiaSky({
     [data],
   )
   const constellationGeometry = useMemo(
-    () => (data ? createConstellationGeometry(data) : null),
+    () =>
+      data ? createConstellationGeometry(data.constellationFigures) : null,
     [data],
+  )
+  const contextConstellationIds = useMemo(
+    () =>
+      emphasizedConstellationId
+        ? selectedConstellationIds.filter(
+            (id) => id !== emphasizedConstellationId,
+          )
+        : selectedConstellationIds,
+    [emphasizedConstellationId, selectedConstellationIds],
+  )
+  const selectedFigurePaths = useMemo(
+    () =>
+      data
+        ? createSelectedFigurePaths(
+            data.constellationFigures,
+            contextConstellationIds,
+          )
+        : [],
+    [contextConstellationIds, data],
+  )
+  const emphasizedFigurePaths = useMemo(
+    () =>
+      data && emphasizedConstellationId
+        ? createSelectedFigurePaths(
+            data.constellationFigures,
+            [emphasizedConstellationId],
+          )
+        : [],
+    [data, emphasizedConstellationId],
+  )
+  const selectedFigureStarGeometry = useMemo(
+    () =>
+      data && contextConstellationIds.length > 0
+        ? createSelectedFigureStarGeometry(
+            data.constellationFigures,
+            contextConstellationIds,
+          )
+        : null,
+    [contextConstellationIds, data],
+  )
+  const emphasizedFigureStarGeometry = useMemo(
+    () =>
+      data && emphasizedConstellationId
+        ? createSelectedFigureStarGeometry(
+            data.constellationFigures,
+            [emphasizedConstellationId],
+            true,
+          )
+        : null,
+    [data, emphasizedConstellationId],
   )
   const brightMaterial = useMemo(() => createSkyMaterial(1), [])
   const densityMaterial = useMemo(() => createSkyMaterial(0.55), [])
+  const figureStarMaterial = useMemo(() => createFigureStarMaterial(), [])
 
   useLayoutEffect(() => {
     const years = yearsSinceGaiaEpoch(date)
@@ -260,8 +569,16 @@ export function GaiaSky({
     return () => {
       brightMaterial.dispose()
       densityMaterial.dispose()
+      figureStarMaterial.dispose()
     }
-  }, [brightMaterial, densityMaterial])
+  }, [brightMaterial, densityMaterial, figureStarMaterial])
+
+  useEffect(() => {
+    return () => {
+      selectedFigureStarGeometry?.dispose()
+      emphasizedFigureStarGeometry?.dispose()
+    }
+  }, [emphasizedFigureStarGeometry, selectedFigureStarGeometry])
 
   if (!data) return null
 
@@ -286,12 +603,82 @@ export function GaiaSky({
           <lineBasicMaterial
             color="#54cfff"
             transparent
-            opacity={0.24}
+            opacity={selectedConstellationIds.length > 0 ? 0.025 : 0.055}
             depthWrite={false}
             blending={AdditiveBlending}
           />
         </lineSegments>
       )}
+      {selectedFigureStarGeometry && (
+        <points
+          geometry={selectedFigureStarGeometry}
+          material={figureStarMaterial}
+          frustumCulled={false}
+          renderOrder={8}
+        />
+      )}
+      {emphasizedFigureStarGeometry && (
+        <points
+          geometry={emphasizedFigureStarGeometry}
+          material={figureStarMaterial}
+          frustumCulled={false}
+          renderOrder={10}
+        />
+      )}
+      {selectedFigurePaths.map((path, index) => {
+        const style = FIGURE_LINE_STYLE[path.style]
+        return (
+          <group key={`${path.id}-${index}`} renderOrder={7}>
+            <Line
+              points={path.points}
+              color="#31c9ee"
+              lineWidth={style.haloWidth}
+              transparent
+              opacity={style.haloOpacity}
+              depthTest
+              depthWrite={false}
+              blending={AdditiveBlending}
+            />
+            <Line
+              points={path.points}
+              color="#b9f3ff"
+              lineWidth={style.coreWidth}
+              transparent
+              opacity={style.coreOpacity}
+              depthTest
+              depthWrite={false}
+              blending={AdditiveBlending}
+            />
+          </group>
+        )
+      })}
+      {emphasizedFigurePaths.map((path, index) => {
+        const style = EMPHASIZED_LINE_STYLE[path.style]
+        return (
+          <group key={`emphasized-${path.id}-${index}`} renderOrder={9}>
+            <Line
+              points={path.points}
+              color="#20d8ff"
+              lineWidth={style.haloWidth}
+              transparent
+              opacity={style.haloOpacity}
+              depthTest
+              depthWrite={false}
+              blending={AdditiveBlending}
+            />
+            <Line
+              points={path.points}
+              color="#effdff"
+              lineWidth={style.coreWidth}
+              transparent
+              opacity={style.coreOpacity}
+              depthTest
+              depthWrite={false}
+              blending={AdditiveBlending}
+            />
+          </group>
+        )
+      })}
     </group>
   )
 }

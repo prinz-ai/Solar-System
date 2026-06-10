@@ -292,6 +292,19 @@ export function getRenderAsset(id: string) {
   return BODY_RENDER_ASSETS[id]
 }
 
+const CONTEXT_RENDER_ASSET_OVERRIDES: Record<string, RenderAsset> = {
+  enceladus: {
+    path: '/models/nasa/enceladus.glb',
+    format: 'glb',
+    coverage: 'Global spacecraft mosaic',
+  },
+}
+
+export function getContextRenderAsset(id: string) {
+  if (id === 'moon') return undefined
+  return CONTEXT_RENDER_ASSET_OVERRIDES[id] ?? BODY_RENDER_ASSETS[id]
+}
+
 const PROCEDURAL_RENDER_COVERAGE: Record<string, string> = {
   'pioneer-10': 'NASA-reference reconstruction',
   'pioneer-11': 'NASA-reference reconstruction',

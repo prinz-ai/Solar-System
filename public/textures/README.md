@@ -11,6 +11,10 @@ Additional mapped bodies:
 
 - Moon: NASA SVS CGI Moon Kit, LRO/LROC.
   https://svs.gsfc.nasa.gov/4720/
+  A 4096x2048 derivative of the 8K texture embedded in NASA's model and a
+  2048x1024 relief texture are also used on a denser lightweight orbital-view
+  sphere, while the selected close view retains the full NASA LRO topographic
+  model.
 - Mercury: USGS Astrogeology MESSENGER MDIS global mosaic.
   https://astrogeology.usgs.gov/search/map/mercury_messenger_mdis_global_mosaic_250m
 - Enceladus: the 2024 USGS Cassini global 100 m mosaic, downsampled to a
@@ -48,6 +52,11 @@ Additional mapped bodies:
   near-infrared base beneath a separate orange atmospheric shell.
   https://science.nasa.gov/resource/titan-mosaic-the-surface-under-the-haze/
   https://astrogeology.usgs.gov/search/map/titan_cassini_sar_hisar_global_mosaic_351m
+- When a planet or dwarf planet is selected, its featured moons retain
+  recognizable contextual surfaces instead of reverting to plain spheres.
+  Orbital views use lower-resolution global mosaics where available and
+  lightweight mission models for shape-dominated moons; full-resolution maps,
+  relief, and dense terrain assets remain reserved for selected close views.
 
 Atmospheric rendering:
 
@@ -57,6 +66,13 @@ Atmospheric rendering:
 - Earth, Mars, Jupiter, Saturn, Uranus, and Neptune use deterministic
   representative cloud layers. They respond to the simulation time and
   sunlight, but they are not live weather observations.
+- Uranus preserves the pale visible-light Voyager composite beneath a
+  higher-contrast representative layer informed by Hubble OPAL and Webb
+  observations: faint latitude bands, seasonal north-polar haze and boundary,
+  and several bright methane-cloud storms. These features are
+  observation-inspired rather than weather-matched to the simulation date.
+  https://science.nasa.gov/missions/hubble/hubble-monitors-changing-weather-and-seasons-at-jupiter-and-uranus/
+  https://science.nasa.gov/missions/webb/nasas-webb-rings-in-holidays-with-ringed-planet-uranus/
 - Near its acquisition date, Earth's selected close view uses a NASA GIBS
   Suomi-NPP and NOAA-20 VIIRS corrected-reflectance composite with observed
   cloud cover at 8192x4096. Remaining black no-data pixels are filled from the

@@ -82,9 +82,9 @@ const CLOUD_LAYERS: Record<string, CloudLayerDefinition> = {
     rotationHours: 10.5,
   },
   uranus: {
-    color: '#d9ffff',
-    opacity: 0.18,
-    scale: 1.008,
+    color: '#ffffff',
+    opacity: 0.72,
+    scale: 1.006,
     rotationHours: -16.6,
   },
   neptune: {
@@ -138,8 +138,15 @@ const IMAGE_TEXTURES: Record<
     dataTexture: true,
   },
   moon: {
-    url: '/textures/moon-lro.jpg',
+    url: '/textures/moon-lro-4k.webp',
     longitudeDirection: 'east',
+    highDetail: true,
+  },
+  'moon-relief': {
+    url: '/textures/relief/moon.webp',
+    longitudeDirection: 'east',
+    highDetail: true,
+    dataTexture: true,
   },
   mars: {
     url: '/textures/mars-viking.jpg',
@@ -162,6 +169,10 @@ const IMAGE_TEXTURES: Record<
     longitudeDirection: 'west',
     highDetail: true,
   },
+  'io-context': {
+    url: '/textures/io-galileo.jpg',
+    longitudeDirection: 'west',
+  },
   europa: {
     url: '/textures/europa-voyager.jpg',
     longitudeDirection: 'west',
@@ -172,10 +183,18 @@ const IMAGE_TEXTURES: Record<
     longitudeDirection: 'west',
     highDetail: true,
   },
+  'ganymede-context': {
+    url: '/textures/ganymede-galileo.jpg',
+    longitudeDirection: 'west',
+  },
   callisto: {
     url: '/textures/callisto-voyager-4k.webp',
     longitudeDirection: 'west',
     highDetail: true,
+  },
+  'callisto-context': {
+    url: '/textures/callisto-voyager.jpg',
+    longitudeDirection: 'west',
   },
   titan: {
     url: '/textures/titan-cassini-radar.jpg',
@@ -215,6 +234,7 @@ const IMAGE_TEXTURES: Record<
 }
 
 const SURFACE_RELIEF: Record<string, { textureId: string; bumpScale: number }> = {
+  moon: { textureId: 'moon-relief', bumpScale: 0.026 },
   io: { textureId: 'io-relief', bumpScale: 0.012 },
   europa: { textureId: 'europa-relief', bumpScale: 0.016 },
   ganymede: { textureId: 'ganymede-relief', bumpScale: 0.02 },
@@ -222,8 +242,21 @@ const SURFACE_RELIEF: Record<string, { textureId: string; bumpScale: number }> =
   titan: { textureId: 'titan-relief', bumpScale: 0.012 },
 }
 
+const CONTEXT_SURFACE_TEXTURES: Record<string, string> = {
+  moon: 'moon',
+  io: 'io-context',
+  europa: 'europa',
+  ganymede: 'ganymede-context',
+  callisto: 'callisto-context',
+  titan: 'titan',
+}
+
 export function hasBodyTexture(id: string) {
   return id in IMAGE_TEXTURES
+}
+
+export function getContextSurfaceTextureId(id: string) {
+  return CONTEXT_SURFACE_TEXTURES[id]
 }
 
 export function usesWestLongitudeTexture(id: string) {
@@ -275,6 +308,34 @@ function layeredNoise(x: number, y: number, seed: number) {
     frequency *= 2.08
   }
   return value
+}
+
+function smoothStep(edge0: number, edge1: number, value: number) {
+  const amount = Math.max(
+    0,
+    Math.min(1, (value - edge0) / Math.max(0.0001, edge1 - edge0)),
+  )
+  return amount * amount * (3 - 2 * amount)
+}
+
+function ovalMask(
+  longitude: number,
+  latitude: number,
+  centerLongitude: number,
+  centerLatitude: number,
+  longitudeRadius: number,
+  latitudeRadius: number,
+) {
+  const rawLongitudeDistance = Math.abs(longitude - centerLongitude)
+  const longitudeDistance = Math.min(
+    rawLongitudeDistance,
+    Math.PI * 2 - rawLongitudeDistance,
+  )
+  const normalizedDistance =
+    (longitudeDistance / longitudeRadius) ** 2 +
+    ((latitude - centerLatitude) / latitudeRadius) ** 2
+  const amount = Math.max(0, 1 - normalizedDistance)
+  return amount * amount
 }
 
 function mixColor(base: string, light: string, amount: number) {
@@ -493,12 +554,57 @@ function cloudPixel(
       break
     }
     case 'uranus': {
-      const bands = Math.sin(latitude * 20) * 0.11
-      const polarHaze = Math.pow(Math.abs(Math.sin(latitude)), 3) * 0.22
-      density = 0.38 + bands + polarHaze + noise * 0.48
-      brightness = 0.67 + bands * 0.45 + polarHaze * 0.25
-      dark = '#86c9cf'
-      light = '#e7ffff'
+      const northPolarCap = smoothStep(0.28, 1.2, latitude)
+      const capBoundary =
+        1 - smoothStep(0.035, 0.13, Math.abs(latitude - 0.34))
+      const broadBands =
+        Math.sin(latitude * 19 + Math.sin(longitude * 2) * 0.45) * 0.04
+      const fineBands = Math.sin(latitude * 47 - longitude * 1.7) * 0.014
+      const latitudeTextureWeight = Math.cos(latitude) ** 2
+      const cloudCells =
+        (Math.sin(longitude * 8 + latitude * 11 + noise * 5) * 0.075 +
+          Math.sin(longitude * 17 - latitude * 7) * 0.028 +
+          noise * 0.22) *
+        latitudeTextureWeight
+      const capEdgeStorm =
+        ovalMask(longitude, latitude, -1.05, 0.42, 0.48, 0.13) * 0.95
+      const midLatitudeStorm =
+        ovalMask(longitude, latitude, 1.82, 0.18, 0.38, 0.11) * 0.82
+      const faintStorm =
+        ovalMask(longitude, latitude, 0.45, 0.52, 0.5, 0.13) * 0.42
+      const farStorm =
+        ovalMask(longitude, latitude, -2.58, 0.23, 0.4, 0.11) * 0.7
+      const trailingStorm =
+        ovalMask(longitude, latitude, 2.76, 0.48, 0.45, 0.12) * 0.55
+      const smallStorm =
+        ovalMask(longitude, latitude, -0.08, 0.27, 0.3, 0.09) * 0.48
+      const storms =
+        capEdgeStorm +
+        midLatitudeStorm +
+        faintStorm +
+        farStorm +
+        trailingStorm +
+        smallStorm
+
+      density =
+        0.17 +
+        northPolarCap * 0.72 +
+        capBoundary * 0.62 +
+        Math.max(0, broadBands + fineBands) * 0.55 +
+        Math.max(0, cloudCells) * 1.1 +
+        storms * 0.96 +
+        Math.max(0, noise) * 0.05
+      brightness =
+        0.32 +
+        northPolarCap * 0.48 -
+        capBoundary * 0.6 +
+        broadBands * 0.42 +
+        fineBands * 0.25 +
+        cloudCells * 1.5 +
+        storms * 1.32 +
+        noise * 0.06
+      dark = '#155b69'
+      light = '#ffffff'
       break
     }
     case 'neptune': {

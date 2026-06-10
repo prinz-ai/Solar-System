@@ -9,6 +9,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "generate:sky": "node scripts/generate-gaia-sky-catalog.mjs",
+    "generate:constellations": "node scripts/build-constellation-figures.mjs",
+    "audit:constellations": "node scripts/render-constellation-audit.mjs",
     "generate:moons": "node scripts/generate-jpl-moon-catalog.mjs",
     "generate:ephemeris": "node scripts/generate-horizons-ephemeris.mjs",
     "update:earth": "node scripts/update-earth-observation.mjs",

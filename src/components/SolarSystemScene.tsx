@@ -42,6 +42,7 @@ import {
   SUN,
 } from '../data/bodies'
 import {
+  getContextRenderAsset,
   getRenderAsset,
   type RenderAsset,
 } from '../data/renderAssets'
@@ -69,6 +70,7 @@ import { useSpiceEphemeris } from '../lib/spiceEphemeris'
 import {
   createPlanetTexture,
   getCloudLayerDefinition,
+  getContextSurfaceTextureId,
   getLoadedTextureIds,
   getSurfaceReliefDefinition,
   hasBodyTexture,
@@ -77,6 +79,8 @@ import {
 } from '../lib/textures'
 import { isSelectionClick } from '../lib/cameraInteraction'
 import { isEarthObservationCurrent } from '../lib/earthObservation'
+import { getConstellationDirection } from '../lib/constellations'
+import { GAIA_SKY_RADIUS, loadGaiaSkyData } from '../lib/gaiaSky'
 import { GaiaSky } from './GaiaSky'
 import type {
   BodySnapshot,
@@ -98,6 +102,12 @@ interface SolarSystemSceneProps {
   closeView: boolean
   sunViewMode: SunViewMode
   skyObserverId: SkyObserverId
+  selectedConstellationIds: string[]
+  emphasizedConstellationId?: string
+  constellationFocusRequest?: {
+    id: string
+    sequence: number
+  }
   cinematicFocus?: CinematicFocus
   onSelect: (id: string) => void
 }
@@ -112,6 +122,7 @@ function selectFromSceneClick(
 
 const HIGH_DETAIL_SPHERE_GEOMETRY = new SphereGeometry(1, 64, 48)
 const EARTH_HIGH_DETAIL_SPHERE_GEOMETRY = new SphereGeometry(1, 128, 96)
+const ORBITAL_MOON_GEOMETRY = new SphereGeometry(1, 192, 128)
 const LOW_DETAIL_SPHERE_GEOMETRY = new SphereGeometry(1, 32, 24)
 const WEST_HIGH_DETAIL_SPHERE_GEOMETRY =
   HIGH_DETAIL_SPHERE_GEOMETRY.clone()
@@ -595,6 +606,9 @@ function RingShadowOverlay({
 }
 
 function bodyGeometry(id: string, detailed: boolean) {
+  if (id === 'moon') {
+    return ORBITAL_MOON_GEOMETRY
+  }
   if (id === 'earth' && detailed) {
     return EARTH_HIGH_DETAIL_SPHERE_GEOMETRY
   }
@@ -1170,6 +1184,74 @@ void main() {
 }
 `
 
+const SUNLIT_CLOUD_VERTEX_SHADER = `
+varying vec2 vCloudUv;
+varying vec3 vCloudWorldNormal;
+
+void main() {
+  vCloudUv = uv;
+  vCloudWorldNormal = normalize(mat3(modelMatrix) * normal);
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`
+
+const SUNLIT_CLOUD_FRAGMENT_SHADER = `
+uniform sampler2D uCloudMap;
+uniform vec3 uCloudColor;
+uniform vec3 uSunDirection;
+uniform float uOpacity;
+
+varying vec2 vCloudUv;
+varying vec3 vCloudWorldNormal;
+
+void main() {
+  vec4 cloud = texture2D(uCloudMap, vCloudUv);
+  float sunFacing = dot(
+    normalize(vCloudWorldNormal),
+    normalize(uSunDirection)
+  );
+  float daylight = smoothstep(0.0, 0.12, sunFacing);
+  float illumination = mix(0.62, 1.0, smoothstep(0.12, 0.72, sunFacing));
+  float alpha = cloud.a * uOpacity * daylight;
+  if (alpha < 0.004) discard;
+  gl_FragColor = vec4(cloud.rgb * uCloudColor * illumination, alpha);
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
+}
+`
+
+function SunlitCloudMaterial({
+  texture,
+  color,
+  opacity,
+  sunDirection,
+}: {
+  texture: Texture
+  color: string
+  opacity: number
+  sunDirection: Vec3
+}) {
+  const uniforms = useMemo(
+    () => ({
+      uCloudMap: { value: texture },
+      uCloudColor: { value: new Color(color) },
+      uSunDirection: { value: new Vector3(...sunDirection) },
+      uOpacity: { value: opacity },
+    }),
+    [color, opacity, sunDirection, texture],
+  )
+
+  return (
+    <shaderMaterial
+      vertexShader={SUNLIT_CLOUD_VERTEX_SHADER}
+      fragmentShader={SUNLIT_CLOUD_FRAGMENT_SHADER}
+      uniforms={uniforms}
+      transparent
+      depthWrite={false}
+    />
+  )
+}
+
 const ATMOSPHERE_PROFILES: Record<
   string,
   { color: string; scale: number; strength: number; limbPower: number }
@@ -1414,16 +1496,25 @@ function PlanetMesh({
               }
               attach="geometry"
             />
-            <meshStandardMaterial
-              map={cloudTexture}
-              color={cloudLayer.color}
-              roughness={definition.id === 'venus' ? 0.88 : 1}
-              metalness={0}
-              transparent={!cloudLayer.opaque}
-              opacity={cloudLayer.opacity}
-              alphaTest={cloudLayer.opaque ? 0 : 0.02}
-              depthWrite={Boolean(cloudLayer.opaque)}
-            />
+            {definition.id === 'uranus' ? (
+              <SunlitCloudMaterial
+                texture={cloudTexture}
+                color={cloudLayer.color}
+                opacity={cloudLayer.opacity}
+                sunDirection={sunDirection}
+              />
+            ) : (
+              <meshStandardMaterial
+                map={cloudTexture}
+                color={cloudLayer.color}
+                roughness={definition.id === 'venus' ? 0.88 : 1}
+                metalness={0}
+                transparent={!cloudLayer.opaque}
+                opacity={cloudLayer.opacity}
+                alphaTest={cloudLayer.opaque ? 0 : 0.02}
+                depthWrite={Boolean(cloudLayer.opaque)}
+              />
+            )}
           </mesh>
         )}
         {atmosphereProfile && (
@@ -1658,7 +1749,10 @@ function SunMesh({
         distance={0}
         decay={0}
       />
-      <sprite scale={[10, 10, 1]} renderOrder={-1}>
+      <sprite
+        scale={[10, 10, 1]}
+        renderOrder={-1}
+      >
         <spriteMaterial
           map={glowTexture}
           color="#ff8d16"
@@ -1668,7 +1762,10 @@ function SunMesh({
           depthWrite={false}
         />
       </sprite>
-      <sprite scale={[16, 16, 1]} renderOrder={-2}>
+      <sprite
+        scale={[16, 16, 1]}
+        renderOrder={-2}
+      >
         <spriteMaterial
           map={glowTexture}
           color="#ff5c0a"
@@ -1678,7 +1775,10 @@ function SunMesh({
           depthWrite={false}
         />
       </sprite>
-      <sprite scale={[14, 14, 1]} renderOrder={-1}>
+      <sprite
+        scale={[14, 14, 1]}
+        renderOrder={-1}
+      >
         <spriteMaterial
           map={coronaTexture}
           color="#ffc36a"
@@ -1689,7 +1789,10 @@ function SunMesh({
           depthWrite={false}
         />
       </sprite>
-      <sprite scale={[21, 21, 1]} renderOrder={-2}>
+      <sprite
+        scale={[21, 21, 1]}
+        renderOrder={-2}
+      >
         <spriteMaterial
           map={coronaTexture}
           color="#ff6e25"
@@ -1761,6 +1864,7 @@ function MoonMesh({
   shadowEvents,
   showLabel,
   selected,
+  parentSelected,
   onSelect,
 }: {
   moon: MoonDefinition
@@ -1770,24 +1874,43 @@ function MoonMesh({
   shadowEvents: EclipseEvent[]
   showLabel: boolean
   selected: boolean
+  parentSelected: boolean
   onSelect: () => void
 }) {
   const radius = moonDisplayRadius(moon, selected)
   const isCatalogMoon = !FEATURED_MOON_IDS.has(moon.id)
   const renderAsset = getRenderAsset(moon.id)
+  const contextRenderAsset =
+    parentSelected && !selected
+      ? getContextRenderAsset(moon.id)
+      : undefined
+  const displayedRenderAsset = selected ? renderAsset : contextRenderAsset
   const mapped = hasBodyTexture(moon.id)
   const relief = getSurfaceReliefDefinition(moon.id)
+  const contextTextureId =
+    parentSelected && !selected
+      ? getContextSurfaceTextureId(moon.id)
+      : undefined
+  const usesContextSurface =
+    Boolean(contextTextureId) && !displayedRenderAsset
+  const textureId =
+    selected || !contextTextureId ? moon.id : contextTextureId
   const texture = useTransientTexture(
-    moon.id,
-    mapped && selected && !renderAsset,
+    textureId,
+    mapped &&
+      ((selected && !renderAsset) || usesContextSurface),
   )
+  const usesContextRelief = moon.id === 'moon' && usesContextSurface
   const reliefTexture = useTransientTexture(
     relief?.textureId ?? moon.id,
-    Boolean(relief && selected && !renderAsset),
+    Boolean(
+      relief &&
+        ((selected && !renderAsset) || usesContextRelief),
+    ),
   )
   const geometry = isCatalogMoon
     ? CATALOG_MOON_GEOMETRY
-    : bodyGeometry(moon.id, selected)
+    : bodyGeometry(moon.id, selected || usesContextSurface)
   const matrix = useMemo(
     () =>
       orientationMatrix(
@@ -1820,9 +1943,9 @@ function MoonMesh({
   return (
     <group position={position}>
       <group matrix={matrix} matrixAutoUpdate={false}>
-        {selected && renderAsset ? (
+        {displayedRenderAsset ? (
           <DetailedModel
-            asset={renderAsset}
+            asset={displayedRenderAsset}
             radius={radius}
             color={moon.color}
             fallbackScale={[...bodyScale]}
@@ -1846,7 +1969,7 @@ function MoonMesh({
               bumpMap={reliefTexture}
               bumpScale={relief?.bumpScale ?? 0}
               color={texture ? '#ffffff' : moon.color}
-              roughness={0.95}
+              roughness={moon.id === 'moon' ? 1 : 0.95}
               metalness={0}
               flatShading={isCatalogMoon}
               emissive="#000000"
@@ -2321,6 +2444,8 @@ function CameraDirector({
   closeView,
   cinematicFocusId,
   cinematicRadius,
+  constellationFocusId,
+  constellationDirection,
 }: {
   date: Date
   selectedId: string
@@ -2329,6 +2454,8 @@ function CameraDirector({
   closeView: boolean
   cinematicFocusId?: string
   cinematicRadius?: number
+  constellationFocusId?: string
+  constellationDirection?: Vec3
 }) {
   const controls = useRef<CameraControls>(null)
   const cameraPosition = useRef(new Vector3())
@@ -2336,6 +2463,8 @@ function CameraDirector({
   const lastSelection = useRef('')
   const lastCloseView = useRef(false)
   const lastCinematicFocus = useRef('')
+  const lastConstellationFocus = useRef('')
+  const constellationFocusActive = useRef(false)
   const planet = PLANETS.find((body) => body.id === selectedId)
   const smallBody = SMALL_BODIES.find((body) => body.id === selectedId)
   const moon = MOONS.find((body) => body.id === selectedId)
@@ -2434,6 +2563,9 @@ function CameraDirector({
       lastSelection.current = selectedId
       lastCloseView.current = closeView
       lastCinematicFocus.current = cinematicFocusId ?? ''
+      constellationFocusActive.current = false
+    } else if (constellationFocusActive.current) {
+      return
     } else {
       const position = controls.current.getPosition(cameraPosition.current)
       const previousTarget = controls.current.getTarget(cameraTarget.current)
@@ -2465,6 +2597,35 @@ function CameraDirector({
     sunwardViewDirection,
   ])
 
+  useEffect(() => {
+    if (
+      !controls.current ||
+      !constellationFocusId ||
+      !constellationDirection ||
+      lastConstellationFocus.current === constellationFocusId
+    ) {
+      return
+    }
+
+    const position = controls.current.getPosition(cameraPosition.current)
+    const skyPoint = new Vector3(...constellationDirection).multiplyScalar(
+      GAIA_SKY_RADIUS - 1,
+    )
+    const sightline = skyPoint.sub(position).normalize()
+    const lookTarget = position.clone().addScaledVector(sightline, 100)
+    controls.current.setLookAt(
+      position.x,
+      position.y,
+      position.z,
+      lookTarget.x,
+      lookTarget.y,
+      lookTarget.z,
+      true,
+    )
+    lastConstellationFocus.current = constellationFocusId
+    constellationFocusActive.current = true
+  }, [constellationDirection, constellationFocusId])
+
   return (
     <CameraControls
       ref={controls}
@@ -2486,6 +2647,9 @@ function SceneContent({
   closeView,
   sunViewMode,
   skyObserverId,
+  selectedConstellationIds,
+  emphasizedConstellationId,
+  constellationFocusRequest,
   cinematicFocus,
   onSelect,
 }: SolarSystemSceneProps) {
@@ -2493,6 +2657,33 @@ function SceneContent({
   const spice = useSpiceEphemeris()
   const horizons = useHorizonsEphemeris()
   const moonHorizons = useMoonHorizonsEphemeris()
+  const [constellationFocus, setConstellationFocus] = useState<{
+    key: string
+    direction: Vec3
+  }>()
+  useEffect(() => {
+    if (!constellationFocusRequest) return
+
+    let active = true
+    const key = `${constellationFocusRequest.id}:${constellationFocusRequest.sequence}`
+    loadGaiaSkyData()
+      .then((data) => {
+        if (!active) return
+        const direction = getConstellationDirection(
+          data.constellationFigures,
+          constellationFocusRequest.id,
+        )
+        setConstellationFocus(
+          direction ? { key, direction } : undefined,
+        )
+      })
+      .catch((error) =>
+        console.error('Unable to focus constellation', error),
+      )
+    return () => {
+      active = false
+    }
+  }, [constellationFocusRequest])
   const spicePlanetPositions = useMemo(
     () => spice.planetPositionsAu(date),
     [date, spice],
@@ -2707,9 +2898,13 @@ function SceneContent({
         showStars={layers.stars}
         showMilkyWay={layers.milkyWay}
         showConstellations={layers.constellations}
+        selectedConstellationIds={selectedConstellationIds}
+        emphasizedConstellationId={emphasizedConstellationId}
       />
       {layers.oortCloud && !isolateSun && <OortCloud />}
-      {layers.orbits && !isolateSun && <PlanetOrbits scaleMode={scaleMode} />}
+      {layers.orbits && !isolateSun && (
+        <PlanetOrbits scaleMode={scaleMode} />
+      )}
       {layers.asteroidBelt && !isolateSun && (
         <OrbitingDust date={date} scaleMode={scaleMode} kind="asteroid" />
       )}
@@ -2733,7 +2928,10 @@ function SceneContent({
             physicalPositionAu={planets[planet.id].positionAu}
             shadowEvents={shadowsByTarget.get(planet.id) ?? []}
             selected={selectedId === planet.id}
-            showLabel={layers.labels && (!closeView || selectedId === planet.id)}
+            showLabel={
+              layers.labels &&
+              (!closeView || selectedId === planet.id)
+            }
             onSelect={() => onSelect(planet.id)}
           />
         ))}
@@ -2761,6 +2959,7 @@ function SceneContent({
               parentPosition={moonParents[moon.parentId].scenePosition}
               shadowEvents={shadowsByTarget.get(moon.id) ?? []}
               selected={selectedId === moon.id}
+              parentSelected={selectedId === moon.parentId}
               showLabel={
                 (moon.showLabel !== false || selectedId === moon.id) &&
                 layers.labels &&
@@ -2770,7 +2969,9 @@ function SceneContent({
             />
           ),
         )}
-      {layers.moons && !isolateSun && selectedCatalogMoon && (
+      {layers.moons &&
+        !isolateSun &&
+        selectedCatalogMoon && (
         <MoonMesh
           moon={selectedCatalogMoon}
           date={date}
@@ -2778,6 +2979,7 @@ function SceneContent({
           parentPosition={moonParents[selectedCatalogMoon.parentId].scenePosition}
           shadowEvents={[]}
           selected
+          parentSelected={false}
           showLabel={layers.labels}
           onSelect={() => onSelect(selectedCatalogMoon.id)}
         />
@@ -2810,6 +3012,8 @@ function SceneContent({
         closeView={closeView}
         cinematicFocusId={cinematicFocus?.id}
         cinematicRadius={cinematicFrame?.radius}
+        constellationFocusId={constellationFocus?.key}
+        constellationDirection={constellationFocus?.direction}
       />
       <RuntimeDiagnostics />
     </>
@@ -2824,7 +3028,9 @@ export function SolarSystemScene(props: SolarSystemSceneProps) {
       camera={{ position: [13, 9, 24], fov: 48, near: 0.001, far: 500 }}
       gl={{ antialias: true, powerPreference: 'high-performance' }}
       onPointerMissed={() => {
-        if (!props.closeView) props.onSelect('sun')
+        if (!props.closeView) {
+          props.onSelect('sun')
+        }
       }}
     >
       <SceneContent {...props} />
