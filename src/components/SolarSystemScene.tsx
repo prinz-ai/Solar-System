@@ -108,6 +108,11 @@ interface SolarSystemSceneProps {
     id: string
     sequence: number
   }
+  screenshotPanRequest?: {
+    x: number
+    y: number
+    sequence: number
+  }
   cinematicFocus?: CinematicFocus
   onSelect: (id: string) => void
 }
@@ -2446,6 +2451,7 @@ function CameraDirector({
   cinematicRadius,
   constellationFocusId,
   constellationDirection,
+  screenshotPanRequest,
 }: {
   date: Date
   selectedId: string
@@ -2456,10 +2462,16 @@ function CameraDirector({
   cinematicRadius?: number
   constellationFocusId?: string
   constellationDirection?: Vec3
+  screenshotPanRequest?: {
+    x: number
+    y: number
+    sequence: number
+  }
 }) {
   const controls = useRef<CameraControls>(null)
   const cameraPosition = useRef(new Vector3())
   const cameraTarget = useRef(new Vector3())
+  const cameraFocalOffset = useRef(new Vector3())
   const lastSelection = useRef('')
   const lastCloseView = useRef(false)
   const lastCinematicFocus = useRef('')
@@ -2560,6 +2572,7 @@ function CameraDirector({
         target[2],
         true,
       )
+      controls.current.setFocalOffset(0, 0, 0, true)
       lastSelection.current = selectedId
       lastCloseView.current = closeView
       lastCinematicFocus.current = cinematicFocusId ?? ''
@@ -2622,9 +2635,29 @@ function CameraDirector({
       lookTarget.z,
       true,
     )
+    controls.current.setFocalOffset(0, 0, 0, true)
     lastConstellationFocus.current = constellationFocusId
     constellationFocusActive.current = true
   }, [constellationDirection, constellationFocusId])
+
+  useEffect(() => {
+    if (!controls.current || !screenshotPanRequest) return
+
+    const step = Math.min(
+      3,
+      Math.max(0.025, controls.current.distance * 0.045),
+    )
+    const currentOffset = controls.current.getFocalOffset(
+      cameraFocalOffset.current,
+      true,
+    )
+    controls.current.setFocalOffset(
+      currentOffset.x + screenshotPanRequest.x * step,
+      currentOffset.y + screenshotPanRequest.y * step,
+      currentOffset.z,
+      true,
+    )
+  }, [screenshotPanRequest])
 
   return (
     <CameraControls
@@ -2650,6 +2683,7 @@ function SceneContent({
   selectedConstellationIds,
   emphasizedConstellationId,
   constellationFocusRequest,
+  screenshotPanRequest,
   cinematicFocus,
   onSelect,
 }: SolarSystemSceneProps) {
@@ -3014,6 +3048,7 @@ function SceneContent({
         cinematicRadius={cinematicFrame?.radius}
         constellationFocusId={constellationFocus?.key}
         constellationDirection={constellationFocus?.direction}
+        screenshotPanRequest={screenshotPanRequest}
       />
       <RuntimeDiagnostics />
     </>

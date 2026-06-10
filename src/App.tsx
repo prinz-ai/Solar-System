@@ -9,6 +9,7 @@ import {
 import {
   Atom,
   CalendarClock,
+  Camera,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -1604,6 +1605,9 @@ function App() {
   const [skyObserverId, setSkyObserverId] =
     useState<SkyObserverId>('earth')
   const [eventsOpen, setEventsOpen] = useState(false)
+  const [screenshotMode, setScreenshotMode] = useState(false)
+  const [screenshotPanRequest, setScreenshotPanRequest] =
+    useState<{ x: number; y: number; sequence: number }>()
   const [constellationFinderOpen, setConstellationFinderOpen] =
     useState(false)
   const [selectedConstellationIds, setSelectedConstellationIds] =
@@ -1745,8 +1749,60 @@ function App() {
     [selectedConstellationIds],
   )
 
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const target = event.target
+      const isEditableTarget =
+        target instanceof HTMLElement &&
+        (target.isContentEditable ||
+          target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT')
+
+      if (event.key === 'Escape' && screenshotMode) {
+        event.preventDefault()
+        setScreenshotMode(false)
+        return
+      }
+
+      const screenshotPanDirection = screenshotMode
+        ? {
+            ArrowLeft: [-1, 0],
+            ArrowRight: [1, 0],
+            ArrowUp: [0, -1],
+            ArrowDown: [0, 1],
+          }[event.key]
+        : undefined
+      if (screenshotPanDirection) {
+        event.preventDefault()
+        setScreenshotPanRequest((current) => ({
+          x: screenshotPanDirection[0],
+          y: screenshotPanDirection[1],
+          sequence: (current?.sequence ?? 0) + 1,
+        }))
+        return
+      }
+
+      if (
+        event.key.toLowerCase() === 's' &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !isEditableTarget
+      ) {
+        event.preventDefault()
+        setScreenshotMode((current) => !current)
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [screenshotMode])
+
   return (
-    <main className="app-shell">
+    <main
+      className={`app-shell ${screenshotMode ? 'is-screenshot-mode' : ''}`}
+    >
       <div className="scene-wrap">
         <SolarSystemScene
           date={clock.date}
@@ -1759,6 +1815,7 @@ function App() {
           selectedConstellationIds={selectedConstellationIds}
           emphasizedConstellationId={emphasizedConstellationId}
           constellationFocusRequest={constellationFocusRequest}
+          screenshotPanRequest={screenshotPanRequest}
           cinematicFocus={cinematicFocus}
           onSelect={selectBody}
         />
@@ -1824,6 +1881,16 @@ function App() {
             {selectedConstellationIds.length > 0 && (
               <b>{selectedConstellationIds.length}</b>
             )}
+          </button>
+          <button
+            className="screenshot-toggle"
+            onClick={() => setScreenshotMode(true)}
+            aria-label="Enter screenshot mode"
+            title="Screenshot mode (S)"
+            data-testid="screenshot-mode-toggle"
+          >
+            <Camera size={18} />
+            <span>SCREENSHOT</span>
           </button>
           <button
             className="layers-toggle"
@@ -2001,6 +2068,20 @@ function App() {
         <RotateCcw size={14} />
         DRAG TO ORBIT · SCROLL TO FLY · CLICK A WORLD
       </div>
+
+      {screenshotMode && (
+        <button
+          className="screenshot-mode-exit"
+          onClick={() => setScreenshotMode(false)}
+          aria-label="Exit screenshot mode"
+          title="Exit screenshot mode"
+          data-testid="screenshot-mode-exit"
+        >
+          <X size={16} />
+          <span>ARROWS PAN / ESC EXITS</span>
+          <kbd>ESC</kbd>
+        </button>
+      )}
     </main>
   )
 }

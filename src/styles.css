@@ -169,6 +169,7 @@ button {
 
 .events-toggle,
 .constellations-toggle,
+.screenshot-toggle,
 .layers-toggle {
   border: 1px solid var(--panel-border);
   border-radius: 8px;
@@ -177,7 +178,8 @@ button {
 }
 
 .events-toggle,
-.constellations-toggle {
+.constellations-toggle,
+.screenshot-toggle {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -192,7 +194,8 @@ button {
 .events-toggle:hover,
 .events-toggle.active,
 .constellations-toggle:hover,
-.constellations-toggle.active {
+.constellations-toggle.active,
+.screenshot-toggle:hover {
   color: #071018;
   border-color: #7edfff;
   background: linear-gradient(135deg, #c4f4ff, #62cbea);
@@ -212,6 +215,94 @@ button {
 
 .layers-toggle {
   display: none;
+}
+
+.screenshot-mode-exit {
+  position: fixed;
+  z-index: 40;
+  top: 18px;
+  right: 18px;
+  display: flex;
+  width: 230px;
+  height: 42px;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  padding: 0 12px;
+  color: #dff9ff;
+  border: 1px solid rgba(126, 223, 255, 0.35);
+  border-radius: 7px;
+  background: rgba(5, 13, 25, 0.82);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.36);
+  backdrop-filter: blur(12px);
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  white-space: nowrap;
+  animation: screenshot-exit-hint 3.2s ease forwards;
+}
+
+.screenshot-mode-exit span {
+  flex: 1;
+  text-align: left;
+}
+
+.screenshot-mode-exit kbd {
+  padding: 3px 5px;
+  color: #8edfff;
+  border: 1px solid rgba(126, 223, 255, 0.2);
+  border-radius: 3px;
+  background: rgba(85, 193, 226, 0.08);
+  font: inherit;
+  font-size: 8px;
+}
+
+.screenshot-mode-exit:hover,
+.screenshot-mode-exit:focus-visible {
+  width: 230px;
+  color: #071018;
+  border-color: #7edfff;
+  outline: none;
+  background: linear-gradient(135deg, #c4f4ff, #62cbea);
+  animation: none;
+  opacity: 1;
+}
+
+.screenshot-mode-exit:hover kbd,
+.screenshot-mode-exit:focus-visible kbd {
+  color: #164052;
+  border-color: rgba(5, 35, 47, 0.2);
+  background: rgba(5, 35, 47, 0.08);
+}
+
+@keyframes screenshot-exit-hint {
+  0%,
+  68% {
+    width: 230px;
+    opacity: 1;
+  }
+
+  100% {
+    width: 42px;
+    opacity: 0;
+  }
+}
+
+.is-screenshot-mode .topbar,
+.is-screenshot-mode .inspector,
+.is-screenshot-mode .layers-panel,
+.is-screenshot-mode .event-director,
+.is-screenshot-mode .constellation-finder,
+.is-screenshot-mode .constellation-selection-tray,
+.is-screenshot-mode .object-browser,
+.is-screenshot-mode .time-console,
+.is-screenshot-mode .event-caption,
+.is-screenshot-mode .interaction-hint {
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .inspector {
@@ -1810,8 +1901,14 @@ button {
   }
 
   .events-toggle span,
-  .constellations-toggle span {
+  .constellations-toggle span,
+  .screenshot-toggle span {
     display: none;
+  }
+
+  .screenshot-mode-exit {
+    top: 12px;
+    right: 12px;
   }
 
   .event-director,
