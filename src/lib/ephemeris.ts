@@ -87,6 +87,7 @@ export function mapAuToScene(positionAu: Vec3, mode: ScaleMode): Vec3 {
 export function getPlanetSnapshots(
   date: Date,
   mode: ScaleMode,
+  precisionPositions: Record<string, Vec3> = {},
 ): Record<string, BodySnapshot> {
   const snapshots: Record<string, BodySnapshot> = {
     sun: {
@@ -98,8 +99,11 @@ export function getPlanetSnapshots(
   }
 
   for (const definition of PLANETS) {
-    const vector = HelioVector(bodyLookup[definition.astronomyBody], date)
-    const positionAu = equatorialToEcliptic(vector)
+    const positionAu =
+      precisionPositions[definition.id] ??
+      equatorialToEcliptic(
+        HelioVector(bodyLookup[definition.astronomyBody], date),
+      )
     snapshots[definition.id] = {
       id: definition.id,
       positionAu,
@@ -146,9 +150,12 @@ function approximateMoonVector(
   moon: MoonDefinition,
   date: Date,
 ): Vec3 {
-  const daysSinceJ2000 = date.getTime() / 86_400_000 + 2_440_587.5 - J2000_JD
+  const epochJd = moon.epochJd ?? J2000_JD
+  const meanAnomalyDeg = moon.meanAnomalyDeg ?? moon.phaseDegJ2000
+  const daysSinceEpoch = julianDate(date) - epochJd
   const phase =
-    ((moon.phaseDegJ2000 + (360 * daysSinceJ2000) / moon.orbitalPeriodDays) *
+    ((meanAnomalyDeg +
+      (360 * daysSinceEpoch) / Math.abs(moon.orbitalPeriodDays)) *
       Math.PI) /
     180
   const inclination = (moon.inclinationDeg * Math.PI) / 180
@@ -158,6 +165,61 @@ function approximateMoonVector(
     Math.sin(phase) * Math.sin(inclination) * distanceAu,
     Math.sin(phase) * Math.cos(inclination) * distanceAu,
   ]
+}
+
+export function moonOrbitalPositionAu(
+  moon: MoonDefinition,
+  date: Date,
+): Vec3 {
+  if (
+    moon.orbitFrame !== 'ecliptic' ||
+    moon.meanAnomalyDeg === undefined ||
+    moon.eccentricity === undefined ||
+    moon.argumentPeriapsisDeg === undefined ||
+    moon.ascendingNodeDeg === undefined
+  ) {
+    return approximateMoonVector(moon, date)
+  }
+
+  const daysSinceEpoch = julianDate(date) - (moon.epochJd ?? J2000_JD)
+  const periodDays = Math.abs(moon.orbitalPeriodDays)
+  const meanAnomaly =
+    (((moon.meanAnomalyDeg * Math.PI) / 180 +
+      (2 * Math.PI * daysSinceEpoch) / periodDays) %
+      (2 * Math.PI) +
+      2 * Math.PI) %
+    (2 * Math.PI)
+  const eccentricAnomaly = solveEccentricAnomaly(
+    meanAnomaly,
+    moon.eccentricity,
+  )
+  const semiMajorAxisAu = moon.orbitalRadiusKm / AU_KM
+  const xOrbital =
+    semiMajorAxisAu *
+    (Math.cos(eccentricAnomaly) - moon.eccentricity)
+  const yOrbital =
+    semiMajorAxisAu *
+    Math.sqrt(1 - moon.eccentricity ** 2) *
+    Math.sin(eccentricAnomaly)
+  const ascendingNode = (moon.ascendingNodeDeg * Math.PI) / 180
+  const inclination = (moon.inclinationDeg * Math.PI) / 180
+  const argumentPeriapsis = (moon.argumentPeriapsisDeg * Math.PI) / 180
+  const cosO = Math.cos(ascendingNode)
+  const sinO = Math.sin(ascendingNode)
+  const cosI = Math.cos(inclination)
+  const sinI = Math.sin(inclination)
+  const cosW = Math.cos(argumentPeriapsis)
+  const sinW = Math.sin(argumentPeriapsis)
+  const xEcliptic =
+    (cosO * cosW - sinO * sinW * cosI) * xOrbital +
+    (-cosO * sinW - sinO * cosW * cosI) * yOrbital
+  const yEcliptic =
+    (sinO * cosW + cosO * sinW * cosI) * xOrbital +
+    (-sinO * sinW + cosO * cosW * cosI) * yOrbital
+  const zEcliptic =
+    sinW * sinI * xOrbital + cosW * sinI * yOrbital
+
+  return [xEcliptic, zEcliptic, -yEcliptic]
 }
 
 function stateToVec3(state: StateVector): Vec3 {
@@ -173,11 +235,35 @@ export function getMoonScenePositions(
   mode: ScaleMode,
   planets: Record<string, BodySnapshot>,
   precisionVectors: Record<string, Vec3> = {},
+  relativePositions = getMoonRelativePositionsAu(date, precisionVectors),
+): Record<string, Vec3> {
+  const positions: Record<string, Vec3> = {}
+
+  for (const moon of MOONS) {
+    const vectorAu = relativePositions[moon.id]
+    if (!vectorAu) continue
+    const offset = scaleMoonOffset(vectorAu, moon, mode)
+    const parent = planets[moon.parentId]?.scenePosition
+    if (!parent) continue
+    positions[moon.id] = [
+      parent[0] + offset[0],
+      parent[1] + offset[1],
+      parent[2] + offset[2],
+    ]
+  }
+
+  return positions
+}
+
+export function getMoonRelativePositionsAu(
+  date: Date,
+  precisionVectors: Record<string, Vec3> = {},
+  moons: MoonDefinition[] = MOONS,
 ): Record<string, Vec3> {
   const exactJupiter = JupiterMoons(date)
   const positions: Record<string, Vec3> = {}
 
-  for (const moon of MOONS) {
+  for (const moon of moons) {
     let vectorAu = precisionVectors[moon.id]
     if (!vectorAu) {
       switch (moon.exactModel) {
@@ -197,18 +283,10 @@ export function getMoonScenePositions(
           vectorAu = stateToVec3(exactJupiter.callisto)
           break
         default:
-          vectorAu = approximateMoonVector(moon, date)
+          vectorAu = moonOrbitalPositionAu(moon, date)
       }
     }
-
-    const offset = scaleMoonOffset(vectorAu, moon, mode)
-    const parent = planets[moon.parentId]?.scenePosition
-    if (!parent) continue
-    positions[moon.id] = [
-      parent[0] + offset[0],
-      parent[1] + offset[1],
-      parent[2] + offset[2],
-    ]
+    positions[moon.id] = vectorAu
   }
 
   return positions
@@ -340,29 +418,59 @@ function solveEccentricAnomaly(meanAnomaly: number, eccentricity: number) {
   return eccentricAnomaly
 }
 
+function solveHyperbolicAnomaly(meanAnomaly: number, eccentricity: number) {
+  let anomaly = Math.asinh(meanAnomaly / Math.max(eccentricity, 1.001))
+  for (let index = 0; index < 18; index += 1) {
+    const denominator = eccentricity * Math.cosh(anomaly) - 1
+    anomaly -=
+      (eccentricity * Math.sinh(anomaly) - anomaly - meanAnomaly) /
+      denominator
+  }
+  return anomaly
+}
+
 export function orbitalPositionAu(
   elements: OrbitalElements,
   date: Date,
 ): Vec3 {
   const days = julianDate(date) - elements.epochJd
-  const periodDays = 365.2568983 * Math.pow(elements.semiMajorAxisAu, 1.5)
-  const meanAnomaly =
-    (((elements.meanAnomalyDeg * Math.PI) / 180 +
-      (2 * Math.PI * days) / periodDays) %
-      (2 * Math.PI) +
-      2 * Math.PI) %
-    (2 * Math.PI)
-  const eccentricAnomaly = solveEccentricAnomaly(
-    meanAnomaly,
-    elements.eccentricity,
-  )
-  const xOrbital =
-    elements.semiMajorAxisAu *
-    (Math.cos(eccentricAnomaly) - elements.eccentricity)
-  const yOrbital =
-    elements.semiMajorAxisAu *
-    Math.sqrt(1 - elements.eccentricity ** 2) *
-    Math.sin(eccentricAnomaly)
+  const semiMajorAxis = Math.abs(elements.semiMajorAxisAu)
+  const periodDays = 365.2568983 * Math.pow(semiMajorAxis, 1.5)
+  const baseMeanAnomaly = (elements.meanAnomalyDeg * Math.PI) / 180
+  let xOrbital: number
+  let yOrbital: number
+  if (elements.eccentricity > 1) {
+    const meanAnomaly =
+      baseMeanAnomaly + (2 * Math.PI * days) / periodDays
+    const hyperbolicAnomaly = solveHyperbolicAnomaly(
+      meanAnomaly,
+      elements.eccentricity,
+    )
+    xOrbital =
+      semiMajorAxis *
+      (elements.eccentricity - Math.cosh(hyperbolicAnomaly))
+    yOrbital =
+      semiMajorAxis *
+      Math.sqrt(elements.eccentricity ** 2 - 1) *
+      Math.sinh(hyperbolicAnomaly)
+  } else {
+    const meanAnomaly =
+      ((baseMeanAnomaly + (2 * Math.PI * days) / periodDays) %
+        (2 * Math.PI) +
+        2 * Math.PI) %
+      (2 * Math.PI)
+    const eccentricAnomaly = solveEccentricAnomaly(
+      meanAnomaly,
+      elements.eccentricity,
+    )
+    xOrbital =
+      semiMajorAxis *
+      (Math.cos(eccentricAnomaly) - elements.eccentricity)
+    yOrbital =
+      semiMajorAxis *
+      Math.sqrt(1 - elements.eccentricity ** 2) *
+      Math.sin(eccentricAnomaly)
+  }
 
   const ascendingNode = (elements.ascendingNodeDeg * Math.PI) / 180
   const inclination = (elements.inclinationDeg * Math.PI) / 180

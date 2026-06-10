@@ -2,7 +2,10 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { MOONS, PLANETS, SMALL_BODIES, SPACECRAFT } from './bodies'
-import { BODY_RENDER_ASSETS } from './renderAssets'
+import {
+  BODY_RENDER_ASSETS,
+  getContextRenderAsset,
+} from './renderAssets'
 
 const knownIds = new Set([
   ...PLANETS.map((body) => body.id),
@@ -33,13 +36,27 @@ describe('detailed render assets', () => {
           `${asset.texturePath} is missing`,
         ).toBe(true)
       }
+      if (asset.bumpMapPath) {
+        expect(
+          existsSync(
+            join(
+              process.cwd(),
+              'public',
+              asset.bumpMapPath.replace(/^\//, ''),
+            ),
+          ),
+          `${asset.bumpMapPath} is missing`,
+        ).toBe(true)
+      }
     }
   })
 
   it('uses the upgraded terrain and dense shape assets', () => {
     for (const id of [
       'moon',
+      'mars',
       'mercury',
+      'deimos',
       'enceladus',
       'ceres',
       'vesta',
@@ -51,6 +68,22 @@ describe('detailed render assets', () => {
     }
     for (const id of ['mercury', 'enceladus', 'ceres', 'vesta']) {
       expect(BODY_RENDER_ASSETS[id]?.texturePath).toBeDefined()
+      expect(BODY_RENDER_ASSETS[id]?.bumpMapPath).toBeDefined()
+    }
+    for (const id of [
+      'pluto',
+      'charon',
+      'bennu',
+      'ryugu',
+      'eros',
+      '67p',
+      'miranda',
+      'ariel',
+      'umbriel',
+      'titania',
+      'oberon',
+    ]) {
+      expect(BODY_RENDER_ASSETS[id]?.surfaceDetail).toBeDefined()
     }
   })
 
@@ -88,6 +121,26 @@ describe('detailed render assets', () => {
       )
     }
     expect(PLANETS.find((body) => body.id === 'neptune')?.hasRings).toBe(true)
+  })
+
+  it('uses lightweight mission models for contextual moon views', () => {
+    expect(getContextRenderAsset('moon')).toBeUndefined()
+    const enceladusContextAsset = getContextRenderAsset('enceladus')
+    expect(enceladusContextAsset?.path).toBe(
+      '/models/nasa/enceladus.glb',
+    )
+    expect(
+      existsSync(
+        join(
+          process.cwd(),
+          'public',
+          enceladusContextAsset!.path.replace(/^\//, ''),
+        ),
+      ),
+    ).toBe(true)
+    for (const id of ['mimas', 'tethys', 'miranda', 'triton', 'charon']) {
+      expect(getContextRenderAsset(id)).toBe(BODY_RENDER_ASSETS[id])
+    }
   })
 
   it('identifies both Pioneer probes as reference reconstructions', async () => {

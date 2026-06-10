@@ -15,15 +15,30 @@ export interface RenderAsset {
     | 'NASA atmospheric composite'
   color?: string
   texturePath?: string
+  bumpMapPath?: string
+  bumpScale?: number
+  roughness?: number
+  surfaceDetail?: 'cratered' | 'icy' | 'rocky'
   rotation?: Vec3
 }
 
 export const BODY_RENDER_ASSETS: Record<string, RenderAsset> = {
+  mars: {
+    path: '/models/nasa/mars.glb',
+    format: 'glb',
+    coverage: 'Global spacecraft mosaic',
+    roughness: 0.9,
+    surfaceDetail: 'cratered',
+  },
   mercury: {
     path: '/models/usgs/mercury-messenger-dem.obj',
     format: 'obj',
     coverage: 'Global DEM and spacecraft mosaic',
     texturePath: '/textures/mission/mercury-seamless.jpg',
+    bumpMapPath: '/textures/relief/mercury.webp',
+    bumpScale: 0.018,
+    roughness: 0.96,
+    surfaceDetail: 'cratered',
   },
   moon: {
     path: '/models/nasa/moon-lro-topography.glb',
@@ -34,6 +49,8 @@ export const BODY_RENDER_ASSETS: Record<string, RenderAsset> = {
     path: '/models/nasa/pluto.glb',
     format: 'glb',
     coverage: 'Global spacecraft mosaic',
+    roughness: 0.94,
+    surfaceDetail: 'icy',
   },
   uranus: {
     path: '/models/nasa/uranus.glb',
@@ -50,11 +67,22 @@ export const BODY_RENDER_ASSETS: Record<string, RenderAsset> = {
     format: 'glb',
     coverage: 'Global spacecraft mosaic',
     rotation: [0, Math.PI / 2, 0],
+    roughness: 0.97,
+    surfaceDetail: 'rocky',
+  },
+  deimos: {
+    path: '/models/nasa/deimos.glb',
+    format: 'glb',
+    coverage: 'Global spacecraft mosaic',
+    roughness: 0.97,
+    surfaceDetail: 'cratered',
   },
   charon: {
     path: '/models/nasa/charon.glb',
     format: 'glb',
     coverage: 'Global spacecraft mosaic',
+    roughness: 0.96,
+    surfaceDetail: 'icy',
   },
   mimas: {
     path: '/models/nasa/mimas.glb',
@@ -65,7 +93,11 @@ export const BODY_RENDER_ASSETS: Record<string, RenderAsset> = {
     path: '/models/usgs/enceladus-dem-200m.obj',
     format: 'obj',
     coverage: 'Global DEM and spacecraft mosaic',
-    texturePath: '/textures/mission/enceladus-seamless.webp',
+    texturePath: '/textures/mission/enceladus-4k.webp',
+    bumpMapPath: '/textures/relief/enceladus.webp',
+    bumpScale: 0.025,
+    roughness: 0.97,
+    surfaceDetail: 'icy',
   },
   tethys: {
     path: '/models/nasa/tethys.glb',
@@ -96,26 +128,36 @@ export const BODY_RENDER_ASSETS: Record<string, RenderAsset> = {
     path: '/models/nasa/miranda.glb',
     format: 'glb',
     coverage: 'Partial spacecraft mosaic',
+    roughness: 0.97,
+    surfaceDetail: 'icy',
   },
   ariel: {
     path: '/models/nasa/ariel.glb',
     format: 'glb',
     coverage: 'Partial spacecraft mosaic',
+    roughness: 0.97,
+    surfaceDetail: 'icy',
   },
   umbriel: {
     path: '/models/nasa/umbriel.glb',
     format: 'glb',
     coverage: 'Partial spacecraft mosaic',
+    roughness: 0.98,
+    surfaceDetail: 'icy',
   },
   titania: {
     path: '/models/nasa/titania.glb',
     format: 'glb',
     coverage: 'Partial spacecraft mosaic',
+    roughness: 0.97,
+    surfaceDetail: 'icy',
   },
   oberon: {
     path: '/models/nasa/oberon.glb',
     format: 'glb',
     coverage: 'Partial spacecraft mosaic',
+    roughness: 0.98,
+    surfaceDetail: 'icy',
   },
   triton: {
     path: '/models/nasa/triton.glb',
@@ -127,12 +169,20 @@ export const BODY_RENDER_ASSETS: Record<string, RenderAsset> = {
     format: 'obj',
     coverage: 'Global DEM and spacecraft mosaic',
     texturePath: '/textures/mission/ceres-seamless.webp',
+    bumpMapPath: '/textures/relief/ceres.webp',
+    bumpScale: 0.022,
+    roughness: 0.96,
+    surfaceDetail: 'rocky',
   },
   vesta: {
     path: '/models/usgs/vesta-dawn-hamo-dem.obj',
     format: 'obj',
     coverage: 'Global DEM and spacecraft mosaic',
     texturePath: '/textures/mission/vesta-seamless.webp',
+    bumpMapPath: '/textures/relief/vesta.webp',
+    bumpScale: 0.026,
+    roughness: 0.95,
+    surfaceDetail: 'rocky',
   },
   bennu: {
     path: '/models/pds/bennu-spc-v42.obj',
@@ -140,6 +190,8 @@ export const BODY_RENDER_ASSETS: Record<string, RenderAsset> = {
     coverage: 'Measured shape model',
     color: '#393735',
     rotation: [Math.PI / 2, 0, 0],
+    roughness: 0.99,
+    surfaceDetail: 'rocky',
   },
   ryugu: {
     path: '/models/jaxa/ryugu-200k.obj',
@@ -147,6 +199,8 @@ export const BODY_RENDER_ASSETS: Record<string, RenderAsset> = {
     coverage: 'Measured shape model',
     color: '#4e4b48',
     rotation: [Math.PI / 2, 0, 0],
+    roughness: 0.99,
+    surfaceDetail: 'rocky',
   },
   eros: {
     path: '/models/pds/eros-gaskell-128.obj',
@@ -154,6 +208,8 @@ export const BODY_RENDER_ASSETS: Record<string, RenderAsset> = {
     coverage: 'Measured shape model',
     color: '#857263',
     rotation: [Math.PI / 2, 0, 0],
+    roughness: 0.96,
+    surfaceDetail: 'rocky',
   },
   apophis: {
     path: '/models/pds/apophis.obj',
@@ -200,6 +256,8 @@ export const BODY_RENDER_ASSETS: Record<string, RenderAsset> = {
     format: 'obj',
     coverage: 'Measured shape model',
     color: '#4f4b47',
+    roughness: 0.99,
+    surfaceDetail: 'rocky',
   },
   'tempel-1': {
     path: '/models/pds/tempel-1.obj',
@@ -232,6 +290,19 @@ export const BODY_RENDER_ASSETS: Record<string, RenderAsset> = {
 
 export function getRenderAsset(id: string) {
   return BODY_RENDER_ASSETS[id]
+}
+
+const CONTEXT_RENDER_ASSET_OVERRIDES: Record<string, RenderAsset> = {
+  enceladus: {
+    path: '/models/nasa/enceladus.glb',
+    format: 'glb',
+    coverage: 'Global spacecraft mosaic',
+  },
+}
+
+export function getContextRenderAsset(id: string) {
+  if (id === 'moon') return undefined
+  return CONTEXT_RENDER_ASSET_OVERRIDES[id] ?? BODY_RENDER_ASSETS[id]
 }
 
 const PROCEDURAL_RENDER_COVERAGE: Record<string, string> = {

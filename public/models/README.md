@@ -6,14 +6,16 @@ for close inspection.
 
 ## NASA
 
-NASA 3D resources supply textured or measured models for Uranus, Neptune,
-Pluto, Charon, Ceres, Vesta, Mimas, Enceladus, Tethys, Dione, Rhea,
+NASA 3D resources supply textured or measured models for Mars, Deimos,
+Uranus, Neptune, Pluto, Charon, Ceres, Vesta, Mimas, Enceladus, Tethys, Dione, Rhea,
 Hyperion, Iapetus, Miranda, Ariel, Umbriel, Titania, Oberon, Triton, Bennu,
 Eros, Itokawa, Arrokoth, Voyager, and New Horizons.
 
 - https://science.nasa.gov/3d-resources/
 - https://science.nasa.gov/resource/pluto-3d-model/
 - https://science.nasa.gov/resource/charon-3d-model/
+- https://science.nasa.gov/resource/planet-mars-3d-model/
+- https://science.nasa.gov/resource/deimos-mars-moon-3d-model/
 - https://science.nasa.gov/resource/ceres-3d-model/
 - https://science.nasa.gov/resource/vesta-3d-model/
 - https://science.nasa.gov/resource/uranus-3d-model/
@@ -102,6 +104,8 @@ recreates those meshes.
 - "Partial spacecraft mosaic" uses real imaged terrain with incomplete
   coverage or lower-confidence reconstruction on unseen regions.
 - "Measured shape model" preserves the observed or radar-derived geometry,
-  but may use a representative neutral surface material.
+  but may use a representative neutral surface material. UV-less measured
+  meshes receive deterministic multiscale albedo detail so their facets and
+  boulders remain readable under close-view lighting.
 - Object sizes are enlarged for visibility. Orbital distances and positions
   still follow the simulation's selected distance mode.

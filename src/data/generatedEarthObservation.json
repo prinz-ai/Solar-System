@@ -1,0 +1,6 @@
+{
+  "date": "2026-06-08",
+  "texturePath": "/earth/viirs-latest.jpg",
+  "sourceUrl": "https://gibs.earthdata.nasa.gov/",
+  "sourceName": "NASA GIBS Suomi-NPP and NOAA-20 VIIRS corrected reflectance true color"
+}
